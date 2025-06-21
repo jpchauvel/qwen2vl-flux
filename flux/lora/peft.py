@@ -16,21 +16,17 @@ import inspect
 from functools import partial
 from typing import Dict, List, Optional, Union
 
-from diffusers.utils import (
-    MIN_PEFT_VERSION,
-    USE_PEFT_BACKEND,
-    check_peft_version,
-    delete_adapter_layers,
-    is_peft_available,
-    set_adapter_layers,
-    set_weights_and_activate_adapters,
-)
-#from .unet_loader_utils import _maybe_expand_lora_scales
+from diffusers.utils import (MIN_PEFT_VERSION, USE_PEFT_BACKEND,
+                             check_peft_version, delete_adapter_layers,
+                             is_peft_available, set_adapter_layers,
+                             set_weights_and_activate_adapters)
+
+# from .unet_loader_utils import _maybe_expand_lora_scales
 
 
 _SET_ADAPTER_SCALE_FN_MAPPING = {
-    #"UNet2DConditionModel": _maybe_expand_lora_scales,
-    #"UNetMotionModel": _maybe_expand_lora_scales,
+    # "UNet2DConditionModel": _maybe_expand_lora_scales,
+    # "UNetMotionModel": _maybe_expand_lora_scales,
     "SD3Transformer2DModel": lambda model_cls, weights: weights,
     "FluxTransformer2DModel": lambda model_cls, weights: weights,
 }
@@ -55,7 +51,9 @@ class PeftAdapterMixin:
     def set_adapters(
         self,
         adapter_names: Union[List[str], str],
-        weights: Optional[Union[float, Dict, List[float], List[Dict], List[None]]] = None,
+        weights: Optional[
+            Union[float, Dict, List[float], List[Dict], List[None]]
+        ] = None,
     ):
         """
         Set the currently active adapters for use in the UNet.
@@ -75,7 +73,7 @@ class PeftAdapterMixin:
 
         pipeline = AutoPipelineForText2Image.from_pretrained(
             "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
-        ).to("cuda")
+        ).to("mps")
         pipeline.load_lora_weights(
             "jbilcke-hf/sdxl-cinematic-1", weight_name="pytorch_lora_weights.safetensors", adapter_name="cinematic"
         )
@@ -86,7 +84,11 @@ class PeftAdapterMixin:
         if not USE_PEFT_BACKEND:
             raise ValueError("PEFT backend is required for `set_adapters()`.")
 
-        adapter_names = [adapter_names] if isinstance(adapter_names, str) else adapter_names
+        adapter_names = (
+            [adapter_names]
+            if isinstance(adapter_names, str)
+            else adapter_names
+        )
 
         # Expand weights into a list, one entry per adapter
         # examples for e.g. 2 adapters:  [{...}, 7] -> [7,7] ; None -> [None, None]
@@ -103,12 +105,16 @@ class PeftAdapterMixin:
         weights = [w if w is not None else 1.0 for w in weights]
 
         # e.g. [{...}, 7] -> [{expanded dict...}, 7]
-        scale_expansion_fn = _SET_ADAPTER_SCALE_FN_MAPPING[self.__class__.__name__]
+        scale_expansion_fn = _SET_ADAPTER_SCALE_FN_MAPPING[
+            self.__class__.__name__
+        ]
         weights = scale_expansion_fn(self, weights)
 
         set_weights_and_activate_adapters(self, adapter_names, weights)
 
-    def add_adapter(self, adapter_config, adapter_name: str = "default") -> None:
+    def add_adapter(
+        self, adapter_config, adapter_name: str = "default"
+    ) -> None:
         r"""
         Adds a new adapter to the current model for training. If no adapter name is passed, a default name is assigned
         to the adapter to follow the convention of the PEFT library.
@@ -126,14 +132,18 @@ class PeftAdapterMixin:
         check_peft_version(min_version=MIN_PEFT_VERSION)
 
         if not is_peft_available():
-            raise ImportError("PEFT is not available. Please install PEFT to use this function: `pip install peft`.")
+            raise ImportError(
+                "PEFT is not available. Please install PEFT to use this function: `pip install peft`."
+            )
 
         from peft import PeftConfig, inject_adapter_in_model
 
         if not self._hf_peft_config_loaded:
             self._hf_peft_config_loaded = True
         elif adapter_name in self.peft_config:
-            raise ValueError(f"Adapter with name {adapter_name} already exists. Please use a different name.")
+            raise ValueError(
+                f"Adapter with name {adapter_name} already exists. Please use a different name."
+            )
 
         if not isinstance(adapter_config, PeftConfig):
             raise ValueError(
@@ -160,7 +170,9 @@ class PeftAdapterMixin:
         check_peft_version(min_version=MIN_PEFT_VERSION)
 
         if not self._hf_peft_config_loaded:
-            raise ValueError("No adapter loaded. Please load an adapter first.")
+            raise ValueError(
+                "No adapter loaded. Please load an adapter first."
+            )
 
         if isinstance(adapter_name, str):
             adapter_name = [adapter_name]
@@ -181,7 +193,10 @@ class PeftAdapterMixin:
                 if hasattr(module, "set_adapter"):
                     module.set_adapter(adapter_name)
                 # Previous versions of PEFT does not support multi-adapter inference
-                elif not hasattr(module, "set_adapter") and len(adapter_name) != 1:
+                elif (
+                    not hasattr(module, "set_adapter")
+                    and len(adapter_name) != 1
+                ):
                     raise ValueError(
                         "You are trying to set multiple adapters and you have a PEFT version that does not support multi-adapter inference. Please upgrade to the latest version of PEFT."
                         " `pip install -U peft` or `pip install -U git+https://github.com/huggingface/peft.git`"
@@ -205,7 +220,9 @@ class PeftAdapterMixin:
         check_peft_version(min_version=MIN_PEFT_VERSION)
 
         if not self._hf_peft_config_loaded:
-            raise ValueError("No adapter loaded. Please load an adapter first.")
+            raise ValueError(
+                "No adapter loaded. Please load an adapter first."
+            )
 
         from peft.tuners.tuners_utils import BaseTunerLayer
 
@@ -228,7 +245,9 @@ class PeftAdapterMixin:
         check_peft_version(min_version=MIN_PEFT_VERSION)
 
         if not self._hf_peft_config_loaded:
-            raise ValueError("No adapter loaded. Please load an adapter first.")
+            raise ValueError(
+                "No adapter loaded. Please load an adapter first."
+            )
 
         from peft.tuners.tuners_utils import BaseTunerLayer
 
@@ -250,10 +269,14 @@ class PeftAdapterMixin:
         check_peft_version(min_version=MIN_PEFT_VERSION)
 
         if not is_peft_available():
-            raise ImportError("PEFT is not available. Please install PEFT to use this function: `pip install peft`.")
+            raise ImportError(
+                "PEFT is not available. Please install PEFT to use this function: `pip install peft`."
+            )
 
         if not self._hf_peft_config_loaded:
-            raise ValueError("No adapter loaded. Please load an adapter first.")
+            raise ValueError(
+                "No adapter loaded. Please load an adapter first."
+            )
 
         from peft.tuners.tuners_utils import BaseTunerLayer
 
@@ -280,10 +303,15 @@ class PeftAdapterMixin:
 
             # For BC with prevous PEFT versions, we need to check the signature
             # of the `merge` method to see if it supports the `adapter_names` argument.
-            supported_merge_kwargs = list(inspect.signature(module.merge).parameters)
+            supported_merge_kwargs = list(
+                inspect.signature(module.merge).parameters
+            )
             if "adapter_names" in supported_merge_kwargs:
                 merge_kwargs["adapter_names"] = adapter_names
-            elif "adapter_names" not in supported_merge_kwargs and adapter_names is not None:
+            elif (
+                "adapter_names" not in supported_merge_kwargs
+                and adapter_names is not None
+            ):
                 raise ValueError(
                     "The `adapter_names` argument is not supported with your PEFT version. Please upgrade"
                     " to the latest version of PEFT. `pip install -U peft`"
@@ -324,7 +352,7 @@ class PeftAdapterMixin:
 
         pipeline = AutoPipelineForText2Image.from_pretrained(
             "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
-        ).to("cuda")
+        ).to("mps")
         pipeline.load_lora_weights(
             "jbilcke-hf/sdxl-cinematic-1", weight_name="pytorch_lora_weights.safetensors", adapter_name="cinematic"
         )
@@ -347,7 +375,7 @@ class PeftAdapterMixin:
 
         pipeline = AutoPipelineForText2Image.from_pretrained(
             "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
-        ).to("cuda")
+        ).to("mps")
         pipeline.load_lora_weights(
             "jbilcke-hf/sdxl-cinematic-1", weight_name="pytorch_lora_weights.safetensors", adapter_name="cinematic"
         )
@@ -374,7 +402,7 @@ class PeftAdapterMixin:
 
         pipeline = AutoPipelineForText2Image.from_pretrained(
             "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
-        ).to("cuda")
+        ).to("mps")
         pipeline.load_lora_weights(
             "jbilcke-hf/sdxl-cinematic-1", weight_name="pytorch_lora_weights.safetensors", adapter_names="cinematic"
         )

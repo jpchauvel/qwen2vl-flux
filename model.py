@@ -1,49 +1,82 @@
-import torch
-from torch import nn
-from PIL import Image
-from transformers import CLIPTokenizer, CLIPTextModel, AutoProcessor, T5EncoderModel, T5TokenizerFast
-from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler
-from flux.transformer_flux import FluxTransformer2DModel
-
-from flux.pipeline_flux_chameleon import FluxPipeline
-from flux.pipeline_flux_img2img import FluxImg2ImgPipeline
-from flux.pipeline_flux_inpaint import FluxInpaintPipeline
-from flux.pipeline_flux_controlnet import FluxControlNetPipeline, FluxControlNetModel
-from flux.pipeline_flux_controlnet_img2img import FluxControlNetImg2ImgPipeline
-from flux.controlnet_flux import FluxMultiControlNetModel
-from flux.pipeline_flux_controlnet_inpainting import FluxControlNetInpaintPipeline
-
-from qwen2_vl.modeling_qwen2_vl import Qwen2VLSimplifiedModel
+import math
 import os
+import tomllib
+
 import cv2
 import numpy as np
-import math
+import torch
+from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler
+from PIL import Image
+from torch import nn
+from transformers import (AutoProcessor, CLIPTextModel, CLIPTokenizer,
+                          T5EncoderModel, T5TokenizerFast)
+
+from flux.controlnet_flux import FluxMultiControlNetModel
+from flux.pipeline_flux_chameleon import FluxPipeline
+from flux.pipeline_flux_controlnet import (FluxControlNetModel,
+                                           FluxControlNetPipeline)
+from flux.pipeline_flux_controlnet_img2img import FluxControlNetImg2ImgPipeline
+from flux.pipeline_flux_controlnet_inpainting import \
+    FluxControlNetInpaintPipeline
+from flux.pipeline_flux_img2img import FluxImg2ImgPipeline
+from flux.pipeline_flux_inpaint import FluxInpaintPipeline
+from flux.transformer_flux import FluxTransformer2DModel
+from qwen2_vl.modeling_qwen2_vl import Qwen2VLSimplifiedModel
+
 
 def get_model_path(model_name):
     """Get the full path for a model based on the checkpoints directory."""
-    base_dir = os.getenv('CHECKPOINT_DIR', 'checkpoints')  # Allow environment variable override
+    base_dir = os.getenv(
+        "CHECKPOINT_DIR", "checkpoints"
+    )  # Allow environment variable override
     return os.path.join(base_dir, model_name)
+
+
+def get_lora_path(lora_name):
+    """Get the full path for a LoRA based on the loras directory."""
+    base_dir = os.getenv(
+        "LORA_DIR", "loras"
+    )  # Allow environment variable override
+    return os.path.join(base_dir, lora_name)
+
+
+def get_lora_toml_file(lora_conf_name):
+    """Get the full path for a LoRA toml configuration file based on the loras directory."""
+    base_dir = os.getenv(
+        "LORA_DIR", "loras"
+    )  # Allow environment variable override
+    return os.path.join(base_dir, lora_conf_name)
+
+
+def get_loras():
+    with open(get_lora_toml_file(LORA_CONF_FILE), "rb") as f:
+        data = tomllib.load(f)
+
+    return {
+        lora_conf["name"]: get_lora_path(lora_conf["path"])
+        for lora_conf in data.get("project", {}).get("loras", [])
+    }
+
 
 # Model paths configuration
 MODEL_PATHS = {
-    'flux': get_model_path('flux'),
-    'qwen2vl': get_model_path('qwen2-vl'),
-    'controlnet': get_model_path('controlnet'),
-    'depth_anything': {
-        'path': get_model_path('depth-anything-v2'),
-        'weights': 'depth_anything_v2_vitl.pth'
+    "flux": get_model_path("flux"),
+    "qwen2vl": get_model_path("qwen2-vl"),
+    "controlnet": get_model_path("controlnet"),
+    "depth_anything": {
+        "path": get_model_path("depth-anything-v2"),
+        "weights": "depth_anything_v2_vitl.pth",
     },
-    'anyline': {
-        'path': get_model_path('anyline'),
-        'weights': 'MTEED.pth'
+    "anyline": {"path": get_model_path("anyline"), "weights": "MTEED.pth"},
+    "sam2": {
+        "path": get_model_path("segment-anything-2"),
+        "weights": "sam2_hiera_large.pt",
+        "config": "sam2_hiera_l.yaml",
     },
-    'sam2': {
-        'path': get_model_path('segment-anything-2'),
-        'weights': 'sam2_hiera_large.pt',
-        'config': 'sam2_hiera_l.yaml'
-    }
 }
 
+# LoRA configuration file
+LORA_CONF_FILE = "loras.toml"
 
 ASPECT_RATIOS = {
     "1:1": (1024, 1024),
@@ -54,6 +87,7 @@ ASPECT_RATIOS = {
     "4:3": (1152, 896),
 }
 
+
 class Qwen2Connector(nn.Module):
     def __init__(self, input_dim=3584, output_dim=4096):
         super().__init__()
@@ -62,8 +96,9 @@ class Qwen2Connector(nn.Module):
     def forward(self, x):
         return self.linear(x)
 
+
 class FluxModel:
-    def __init__(self, is_turbo=False, device="cuda", required_features=None):
+    def __init__(self, is_turbo=False, device="mps", required_features=None):
         """
         Initialize FluxModel with specified features
         Args:
@@ -85,16 +120,18 @@ class FluxModel:
         self._init_base_models()
 
         # Initialize optional models based on requirements
-        if 'controlnet' in required_features or any(f in required_features for f in ['depth', 'line']):
+        if "controlnet" in required_features or any(
+            f in required_features for f in ["depth", "line"]
+        ):
             self._init_controlnet()
-        
-        if 'depth' in required_features:
+
+        if "depth" in required_features:
             self._init_depth_model()
-            
-        if 'line' in required_features:
+
+        if "line" in required_features:
             self._init_line_detector()
-            
-        if 'sam' in required_features:
+
+        if "sam" in required_features:
             self._init_sam()
 
         if is_turbo:
@@ -104,39 +141,63 @@ class FluxModel:
         """Initialize the core models that are always needed"""
         # Qwen2VL and connector initialization
         self.qwen2vl = Qwen2VLSimplifiedModel.from_pretrained(
-            MODEL_PATHS['qwen2vl'], 
-            torch_dtype=self.dtype
+            MODEL_PATHS["qwen2vl"], torch_dtype=self.dtype
         )
         self.qwen2vl.requires_grad_(False).to(self.device)
 
         self.connector = Qwen2Connector(input_dim=3584, output_dim=4096)
-        connector_path = os.path.join(MODEL_PATHS['qwen2vl'], "connector.pt")
+        connector_path = os.path.join(MODEL_PATHS["qwen2vl"], "connector.pt")
         if os.path.exists(connector_path):
-            connector_state_dict = torch.load(connector_path, map_location=self.device, weights_only=True)
-            connector_state_dict = {k.replace('module.', ''): v for k, v in connector_state_dict.items()}
+            connector_state_dict = torch.load(
+                connector_path, map_location=self.device, weights_only=True
+            )
+            connector_state_dict = {
+                k.replace("module.", ""): v
+                for k, v in connector_state_dict.items()
+            }
             self.connector.load_state_dict(connector_state_dict)
         self.connector.to(self.dtype).to(self.device)
 
         # Text encoders initialization
-        self.tokenizer = CLIPTokenizer.from_pretrained(MODEL_PATHS['flux'], subfolder="tokenizer")
-        self.text_encoder = CLIPTextModel.from_pretrained(MODEL_PATHS['flux'], subfolder="text_encoder")
-        self.text_encoder_two = T5EncoderModel.from_pretrained(MODEL_PATHS['flux'], subfolder="text_encoder_2")
-        self.tokenizer_two = T5TokenizerFast.from_pretrained(MODEL_PATHS['flux'], subfolder="tokenizer_2")
+        self.tokenizer = CLIPTokenizer.from_pretrained(
+            MODEL_PATHS["flux"], subfolder="tokenizer"
+        )
+        self.text_encoder = CLIPTextModel.from_pretrained(
+            MODEL_PATHS["flux"], subfolder="text_encoder"
+        )
+        self.text_encoder_two = T5EncoderModel.from_pretrained(
+            MODEL_PATHS["flux"], subfolder="text_encoder_2"
+        )
+        self.tokenizer_two = T5TokenizerFast.from_pretrained(
+            MODEL_PATHS["flux"], subfolder="tokenizer_2"
+        )
 
         self.text_encoder.requires_grad_(False).to(self.dtype).to(self.device)
-        self.text_encoder_two.requires_grad_(False).to(self.dtype).to(self.device)
+        self.text_encoder_two.requires_grad_(False).to(self.dtype).to(
+            self.device
+        )
 
         # T5 context embedder
         self.t5_context_embedder = nn.Linear(4096, 3072)
-        t5_embedder_path = os.path.join(MODEL_PATHS['qwen2vl'], "t5_embedder.pt")
-        t5_embedder_state_dict = torch.load(t5_embedder_path, map_location=self.device, weights_only=True)
+        t5_embedder_path = os.path.join(
+            MODEL_PATHS["qwen2vl"], "t5_embedder.pt"
+        )
+        t5_embedder_state_dict = torch.load(
+            t5_embedder_path, map_location=self.device, weights_only=True
+        )
         self.t5_context_embedder.load_state_dict(t5_embedder_state_dict)
         self.t5_context_embedder.to(self.dtype).to(self.device)
 
         # Basic components
-        self.noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_PATHS['flux'], subfolder="scheduler", shift=1)
-        self.vae = AutoencoderKL.from_pretrained(MODEL_PATHS['flux'], subfolder="vae")
-        self.transformer = FluxTransformer2DModel.from_pretrained(MODEL_PATHS['flux'], subfolder="transformer")
+        self.noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+            MODEL_PATHS["flux"], subfolder="scheduler", shift=1
+        )
+        self.vae = AutoencoderKL.from_pretrained(
+            MODEL_PATHS["flux"], subfolder="vae"
+        )
+        self.transformer = FluxTransformer2DModel.from_pretrained(
+            MODEL_PATHS["flux"], subfolder="transformer"
+        )
 
         self.vae.requires_grad_(False).to(self.dtype).to(self.device)
         self.transformer.requires_grad_(False).to(self.dtype).to(self.device)
@@ -144,8 +205,7 @@ class FluxModel:
     def _init_controlnet(self):
         """Initialize ControlNet model"""
         self.controlnet_union = FluxControlNetModel.from_pretrained(
-            MODEL_PATHS['controlnet'], 
-            torch_dtype=torch.bfloat16
+            MODEL_PATHS["controlnet"], torch_dtype=torch.bfloat16
         )
         self.controlnet_union.requires_grad_(False).to(self.device)
         self.controlnet = FluxMultiControlNetModel([self.controlnet_union])
@@ -154,27 +214,31 @@ class FluxModel:
         """Initialize Depth Anything V2 model"""
         if not self._depth_model_imported:
             from depth_anything_v2.dpt import DepthAnythingV2
+
             self._depth_model_imported = True
 
         self.depth_model = DepthAnythingV2(
-            encoder='vitl',
-            features=256,
-            out_channels=[256, 512, 1024, 1024]
+            encoder="vitl", features=256, out_channels=[256, 512, 1024, 1024]
         )
-        depth_weights = os.path.join(MODEL_PATHS['depth_anything']['path'], 
-                                   MODEL_PATHS['depth_anything']['weights'])
-        self.depth_model.load_state_dict(torch.load(depth_weights, map_location=self.device))
+        depth_weights = os.path.join(
+            MODEL_PATHS["depth_anything"]["path"],
+            MODEL_PATHS["depth_anything"]["weights"],
+        )
+        self.depth_model.load_state_dict(
+            torch.load(depth_weights, map_location=self.device)
+        )
         self.depth_model.requires_grad_(False).to(self.device)
 
     def _init_line_detector(self):
         """Initialize line detection model"""
         if not self._line_detector_imported:
             from controlnet_aux import AnylineDetector
+
             self._line_detector_imported = True
 
         self.anyline = AnylineDetector.from_pretrained(
-            MODEL_PATHS['anyline']['path'],
-            filename=MODEL_PATHS['anyline']['weights']
+            MODEL_PATHS["anyline"]["path"],
+            filename=MODEL_PATHS["anyline"]["weights"],
         )
         self.anyline.to(self.device)
 
@@ -183,30 +247,42 @@ class FluxModel:
         if not self._sam_imported:
             from sam2.build_sam import build_sam2
             from sam2.sam2_image_predictor import SAM2ImagePredictor
+
             self._sam_imported = True
 
-        sam2_checkpoint = os.path.join(MODEL_PATHS['sam2']['path'], 
-                                     MODEL_PATHS['sam2']['weights'])
-        model_cfg = os.path.join(MODEL_PATHS['sam2']['path'], 
-                               MODEL_PATHS['sam2']['config'])
-        self.sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=self.device)
+        sam2_checkpoint = os.path.join(
+            MODEL_PATHS["sam2"]["path"], MODEL_PATHS["sam2"]["weights"]
+        )
+        model_cfg = os.path.join(
+            MODEL_PATHS["sam2"]["path"], MODEL_PATHS["sam2"]["config"]
+        )
+        self.sam2_model = build_sam2(
+            model_cfg, sam2_checkpoint, device=self.device
+        )
         self.sam2_predictor = SAM2ImagePredictor(self.sam2_model)
 
     def _enable_turbo(self):
         """Enable turbo mode for faster inference"""
         if not self._turbo_imported:
             from optimum.quanto import freeze, qfloat8, quantize
+
             self._turbo_imported = True
 
         quantize(
             self.transformer,
             weights=qfloat8,
             exclude=[
-                "*.norm", "*.norm1", "*.norm2", "*.norm2_context",
-                "proj_out", "x_embedder", "norm_out", "context_embedder",
+                "*.norm",
+                "*.norm1",
+                "*.norm2",
+                "*.norm2_context",
+                "proj_out",
+                "x_embedder",
+                "norm_out",
+                "context_embedder",
             ],
         )
-        freeze(self.transformer) 
+        freeze(self.transformer)
 
     def generate_mask(self, image, input_points, input_labels):
         """
@@ -254,32 +330,64 @@ class FluxModel:
         h_out = h // 2
         w_out = w // 2
         # 重塑为 (batch_size, height, width, hidden_dim)
-        reshaped = image_hidden_state.view(batch_size, h_out, w_out, hidden_dim)
+        reshaped = image_hidden_state.view(
+            batch_size, h_out, w_out, hidden_dim
+        )
         return reshaped
 
-    def generate_attention_matrix(self, center_x, center_y, radius, image_shape):
+    def generate_attention_matrix(
+        self, center_x, center_y, radius, image_shape
+    ):
         height, width = image_shape
         y, x = np.ogrid[:height, :width]
         center_y, center_x = center_y * height, center_x * width
-        distances = np.sqrt((x - center_x)**2 + (y - center_y)**2)
-        attention = np.clip(1 - distances / (radius * min(height, width)), 0, 1)
+        distances = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+        attention = np.clip(
+            1 - distances / (radius * min(height, width)), 0, 1
+        )
         return attention
 
-    def apply_attention(self, image_hidden_state, image_grid_thw, center_x, center_y, radius):
-        qwen2_2d_image_embedding = self.recover_2d_shape(image_hidden_state, tuple(image_grid_thw.tolist()[0]))
-        attention_matrix = self.generate_attention_matrix(
-            center_x, center_y, radius,
-            (qwen2_2d_image_embedding.size(1), qwen2_2d_image_embedding.size(2))
+    def apply_attention(
+        self, image_hidden_state, image_grid_thw, center_x, center_y, radius
+    ):
+        qwen2_2d_image_embedding = self.recover_2d_shape(
+            image_hidden_state, tuple(image_grid_thw.tolist()[0])
         )
-        attention_tensor = torch.from_numpy(attention_matrix).to(self.dtype).unsqueeze(0).unsqueeze(-1)
-        qwen2_2d_image_embedding = qwen2_2d_image_embedding * attention_tensor.to(self.device)
-        return qwen2_2d_image_embedding.view(1, -1, qwen2_2d_image_embedding.size(3))
+        attention_matrix = self.generate_attention_matrix(
+            center_x,
+            center_y,
+            radius,
+            (
+                qwen2_2d_image_embedding.size(1),
+                qwen2_2d_image_embedding.size(2),
+            ),
+        )
+        attention_tensor = (
+            torch.from_numpy(attention_matrix)
+            .to(self.dtype)
+            .unsqueeze(0)
+            .unsqueeze(-1)
+        )
+        qwen2_2d_image_embedding = (
+            qwen2_2d_image_embedding * attention_tensor.to(self.device)
+        )
+        return qwen2_2d_image_embedding.view(
+            1, -1, qwen2_2d_image_embedding.size(3)
+        )
 
     def compute_text_embeddings(self, prompt):
         with torch.no_grad():
-            text_inputs = self.tokenizer(prompt, padding="max_length", max_length=77, truncation=True, return_tensors="pt")
+            text_inputs = self.tokenizer(
+                prompt,
+                padding="max_length",
+                max_length=77,
+                truncation=True,
+                return_tensors="pt",
+            )
             text_input_ids = text_inputs.input_ids.to(self.device)
-            prompt_embeds = self.text_encoder(text_input_ids, output_hidden_states=False)
+            prompt_embeds = self.text_encoder(
+                text_input_ids, output_hidden_states=False
+            )
             pooled_prompt_embeds = prompt_embeds.pooler_output
         return pooled_prompt_embeds.to(self.dtype)
 
@@ -312,7 +420,9 @@ class FluxModel:
 
         # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
         prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
-        prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
+        prompt_embeds = prompt_embeds.view(
+            batch_size * num_images_per_prompt, seq_len, -1
+        )
 
         return prompt_embeds
 
@@ -323,15 +433,23 @@ class FluxModel:
                 "content": [
                     {"type": "image", "image": image},
                     {"type": "text", "text": "Describe this image."},
-                ]
+                ],
             }
         ]
-        text = self.qwen2vl_processor.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
+        text = self.qwen2vl_processor.apply_chat_template(
+            message, tokenize=False, add_generation_prompt=True
+        )
 
         with torch.no_grad():
-            inputs = self.qwen2vl_processor(text=[text], images=[image], padding=True, return_tensors="pt").to(self.device)
-            output_hidden_state, image_token_mask, image_grid_thw = self.qwen2vl(**inputs)
-            image_hidden_state = output_hidden_state[image_token_mask].view(1, -1, output_hidden_state.size(-1))
+            inputs = self.qwen2vl_processor(
+                text=[text], images=[image], padding=True, return_tensors="pt"
+            ).to(self.device)
+            output_hidden_state, image_token_mask, image_grid_thw = (
+                self.qwen2vl(**inputs)
+            )
+            image_hidden_state = output_hidden_state[image_token_mask].view(
+                1, -1, output_hidden_state.size(-1)
+            )
 
         return image_hidden_state, image_grid_thw
 
@@ -381,39 +499,90 @@ class FluxModel:
 
         return Image.fromarray(depth_rgb)
 
-
-    def generate(self, input_image_a, input_image_b=None, prompt="", guidance_scale=3.5, num_inference_steps=28,
-                 aspect_ratio="1:1", center_x=None, center_y=None, radius=None, mode="variation",
-                 denoise_strength=0.8, mask_image=None, imageCount=2,
-                 line_mode=True, depth_mode=True, line_strength=0.4, depth_strength=0.2):
+    def generate(
+        self,
+        input_image_a,
+        input_image_b=None,
+        prompt="",
+        guidance_scale=3.5,
+        num_inference_steps=28,
+        aspect_ratio="1:1",
+        center_x=None,
+        center_y=None,
+        radius=None,
+        mode="variation",
+        denoise_strength=0.8,
+        mask_image=None,
+        imageCount=2,
+        line_mode=True,
+        depth_mode=True,
+        line_strength=0.4,
+        depth_strength=0.2,
+    ):
 
         batch_size = imageCount
         if aspect_ratio not in ASPECT_RATIOS:
-            raise ValueError(f"Invalid aspect ratio. Choose from {list(ASPECT_RATIOS.keys())}")
+            raise ValueError(
+                f"Invalid aspect ratio. Choose from {list(ASPECT_RATIOS.keys())}"
+            )
 
         width, height = ASPECT_RATIOS[aspect_ratio]
 
         pooled_prompt_embeds = self.compute_text_embeddings(prompt="")
         t5_prompt_embeds = None
         if prompt != "":
-            self.qwen2vl_processor = AutoProcessor.from_pretrained(MODEL_PATHS['qwen2vl'], min_pixels=256*28*28, max_pixels=256*28*28)
-            t5_prompt_embeds = self.compute_t5_text_embeddings(prompt=prompt, device=self.device)
+            self.qwen2vl_processor = AutoProcessor.from_pretrained(
+                MODEL_PATHS["qwen2vl"],
+                min_pixels=256 * 28 * 28,
+                max_pixels=256 * 28 * 28,
+            )
+            t5_prompt_embeds = self.compute_t5_text_embeddings(
+                prompt=prompt, device=self.device
+            )
             t5_prompt_embeds = self.t5_context_embedder(t5_prompt_embeds)
         else:
-            self.qwen2vl_processor = AutoProcessor.from_pretrained(MODEL_PATHS['qwen2vl'], min_pixels=512*28*28, max_pixels=512*28*28)
+            self.qwen2vl_processor = AutoProcessor.from_pretrained(
+                MODEL_PATHS["qwen2vl"],
+                min_pixels=512 * 28 * 28,
+                max_pixels=512 * 28 * 28,
+            )
 
-        qwen2_hidden_state_a, image_grid_thw_a = self.process_image(input_image_a)
+        qwen2_hidden_state_a, image_grid_thw_a = self.process_image(
+            input_image_a
+        )
         # 只有当所有注意力参数都被提供时，才应用注意力机制
         if mode == "variation":
-            if center_x is not None and center_y is not None and radius is not None:
-                qwen2_hidden_state_a = self.apply_attention(qwen2_hidden_state_a, image_grid_thw_a, center_x, center_y, radius)
+            if (
+                center_x is not None
+                and center_y is not None
+                and radius is not None
+            ):
+                qwen2_hidden_state_a = self.apply_attention(
+                    qwen2_hidden_state_a,
+                    image_grid_thw_a,
+                    center_x,
+                    center_y,
+                    radius,
+                )
             qwen2_hidden_state_a = self.connector(qwen2_hidden_state_a)
 
         if mode == "img2img" or mode == "inpaint":
             if input_image_b:
-                qwen2_hidden_state_b, image_grid_thw_b = self.process_image(input_image_b)
-                if center_x is not None and center_y is not None and radius is not None:
-                    qwen2_hidden_state_b = self.apply_attention(qwen2_hidden_state_b, image_grid_thw_b, center_x, center_y, radius)
+                qwen2_hidden_state_b, image_grid_thw_b = self.process_image(
+                    input_image_b
+                )
+                if (
+                    center_x is not None
+                    and center_y is not None
+                    and radius is not None
+                ):
+                    qwen2_hidden_state_b = self.apply_attention(
+                        qwen2_hidden_state_b,
+                        image_grid_thw_b,
+                        center_x,
+                        center_y,
+                        radius,
+                    )
                 qwen2_hidden_state_b = self.connector(qwen2_hidden_state_b)
             else:
                 qwen2_hidden_state_a = self.connector(qwen2_hidden_state_a)
@@ -422,9 +591,21 @@ class FluxModel:
         if mode == "controlnet" or mode == "controlnet-inpaint":
             qwen2_hidden_state_b = None
             if input_image_b:
-                qwen2_hidden_state_b, image_grid_thw_b = self.process_image(input_image_b)
-                if center_x is not None and center_y is not None and radius is not None:
-                    qwen2_hidden_state_b = self.apply_attention(qwen2_hidden_state_b, image_grid_thw_b, center_x, center_y, radius)
+                qwen2_hidden_state_b, image_grid_thw_b = self.process_image(
+                    input_image_b
+                )
+                if (
+                    center_x is not None
+                    and center_y is not None
+                    and radius is not None
+                ):
+                    qwen2_hidden_state_b = self.apply_attention(
+                        qwen2_hidden_state_b,
+                        image_grid_thw_b,
+                        center_x,
+                        center_y,
+                        radius,
+                    )
                 qwen2_hidden_state_b = self.connector(qwen2_hidden_state_b)
             qwen2_hidden_state_a = self.connector(qwen2_hidden_state_a)
 
@@ -441,16 +622,22 @@ class FluxModel:
                 tokenizer=self.tokenizer,
             )
 
+            for adapter_name, path in get_loras().items():
+                pipeline.load_lora_weights(path, adapter_name=adapter_name)
+
             gen_images = pipeline(
                 prompt_embeds=qwen2_hidden_state_a.repeat(batch_size, 1, 1),
-                t5_prompt_embeds=t5_prompt_embeds.repeat(batch_size, 1, 1) if t5_prompt_embeds is not None else None,
+                t5_prompt_embeds=(
+                    t5_prompt_embeds.repeat(batch_size, 1, 1)
+                    if t5_prompt_embeds is not None
+                    else None
+                ),
                 pooled_prompt_embeds=pooled_prompt_embeds,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 height=height,
                 width=width,
             ).images
-
 
         #############################
         # IMAGE-TO-IMAGE
@@ -467,18 +654,30 @@ class FluxModel:
                 tokenizer=self.tokenizer,
             )
 
+            for adapter_name, path in get_loras().items():
+                img2img_pipeline.load_lora_weights(
+                    path, adapter_name=adapter_name
+                )
+
             gen_images = img2img_pipeline(
                 image=input_image_a,
                 strength=denoise_strength,
-                prompt_embeds=qwen2_hidden_state_b.repeat(batch_size, 1, 1) if qwen2_hidden_state_b is not None else qwen2_hidden_state_a.repeat(batch_size, 1, 1),
-                t5_prompt_embeds=t5_prompt_embeds.repeat(batch_size, 1, 1) if t5_prompt_embeds is not None else None,
+                prompt_embeds=(
+                    qwen2_hidden_state_b.repeat(batch_size, 1, 1)
+                    if qwen2_hidden_state_b is not None
+                    else qwen2_hidden_state_a.repeat(batch_size, 1, 1)
+                ),
+                t5_prompt_embeds=(
+                    t5_prompt_embeds.repeat(batch_size, 1, 1)
+                    if t5_prompt_embeds is not None
+                    else None
+                ),
                 pooled_prompt_embeds=pooled_prompt_embeds,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 height=height,
                 width=width,
             ).images
-
 
         #############################
         # INPAINTING
@@ -499,12 +698,25 @@ class FluxModel:
                 tokenizer=self.tokenizer,
             )
 
+            for adapter_name, path in get_loras().items():
+                inpaint_pipeline.load_lora_weights(
+                    path, adapter_name=adapter_name
+                )
+
             gen_images = inpaint_pipeline(
                 image=input_image_a,
                 mask_image=mask_image,
                 strength=denoise_strength,
-                prompt_embeds=qwen2_hidden_state_b.repeat(batch_size, 1, 1) if qwen2_hidden_state_b is not None else qwen2_hidden_state_a.repeat(batch_size, 1, 1),
-                t5_prompt_embeds=t5_prompt_embeds.repeat(batch_size, 1, 1) if t5_prompt_embeds is not None else None,
+                prompt_embeds=(
+                    qwen2_hidden_state_b.repeat(batch_size, 1, 1)
+                    if qwen2_hidden_state_b is not None
+                    else qwen2_hidden_state_a.repeat(batch_size, 1, 1)
+                ),
+                t5_prompt_embeds=(
+                    t5_prompt_embeds.repeat(batch_size, 1, 1)
+                    if t5_prompt_embeds is not None
+                    else None
+                ),
                 pooled_prompt_embeds=pooled_prompt_embeds,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
@@ -528,6 +740,11 @@ class FluxModel:
                 controlnet=self.controlnet,
             )
 
+            for adapter_name, path in get_loras().items():
+                controlnet_pipeline.load_lora_weights(
+                    path, adapter_name=adapter_name
+                )
+
             # 准备控制图像和模式列表
             control_images = []
             control_modes = []
@@ -541,7 +758,9 @@ class FluxModel:
                 conditioning_scales.append(depth_strength)
 
             if line_mode:
-                control_image_canny = self.anyline(input_image_a, detect_resolution=1280)
+                control_image_canny = self.anyline(
+                    input_image_a, detect_resolution=1280
+                )
                 control_images.append(control_image_canny)
                 control_modes.append(0)  # line mode
                 conditioning_scales.append(line_strength)
@@ -549,14 +768,20 @@ class FluxModel:
             # 如果没有启用任何模式，默认使用line+depth模式
             if not line_mode and not depth_mode:
                 control_image_depth = self.generate_depth_map(input_image_a)
-                control_image_canny = self.anyline(input_image_a, detect_resolution=1280)
+                control_image_canny = self.anyline(
+                    input_image_a, detect_resolution=1280
+                )
                 control_images = [control_image_depth, control_image_canny]
                 control_modes = [2, 0]
                 conditioning_scales = [0.2, 0.4]
 
             if qwen2_hidden_state_b is not None:
-                qwen2_hidden_state_b = qwen2_hidden_state_b[:, :qwen2_hidden_state_a.shape[1], :]
-                qwen2_hidden_state_a = qwen2_hidden_state_a[:, :qwen2_hidden_state_b.shape[1], :]
+                qwen2_hidden_state_b = qwen2_hidden_state_b[
+                    :, : qwen2_hidden_state_a.shape[1], :
+                ]
+                qwen2_hidden_state_a = qwen2_hidden_state_a[
+                    :, : qwen2_hidden_state_b.shape[1], :
+                ]
 
             gen_images = controlnet_pipeline(
                 image=input_image_a,
@@ -564,9 +789,19 @@ class FluxModel:
                 control_image=control_images,
                 control_mode=control_modes,
                 controlnet_conditioning_scale=conditioning_scales,
-                prompt_embeds=qwen2_hidden_state_b.repeat(batch_size, 1, 1) if qwen2_hidden_state_b is not None else qwen2_hidden_state_a.repeat(batch_size, 1, 1),
-                t5_prompt_embeds=t5_prompt_embeds.repeat(batch_size, 1, 1) if t5_prompt_embeds is not None else None,
-                prompt_embeds_control=qwen2_hidden_state_a.repeat(batch_size, 1, 1),
+                prompt_embeds=(
+                    qwen2_hidden_state_b.repeat(batch_size, 1, 1)
+                    if qwen2_hidden_state_b is not None
+                    else qwen2_hidden_state_a.repeat(batch_size, 1, 1)
+                ),
+                t5_prompt_embeds=(
+                    t5_prompt_embeds.repeat(batch_size, 1, 1)
+                    if t5_prompt_embeds is not None
+                    else None
+                ),
+                prompt_embeds_control=qwen2_hidden_state_a.repeat(
+                    batch_size, 1, 1
+                ),
                 pooled_prompt_embeds=pooled_prompt_embeds,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
@@ -591,6 +826,11 @@ class FluxModel:
                 controlnet=self.controlnet,
             )
 
+            for adapter_name, path in get_loras().items():
+                controlnet_pipeline.load_lora_weights(
+                    path, adapter_name=adapter_name
+                )
+
             # 准备控制图像和模式列表
             control_images = []
             control_modes = []
@@ -604,7 +844,9 @@ class FluxModel:
                 conditioning_scales.append(depth_strength)
 
             if line_mode:
-                control_image_canny = self.anyline(input_image_a, detect_resolution=1280)
+                control_image_canny = self.anyline(
+                    input_image_a, detect_resolution=1280
+                )
                 control_images.append(control_image_canny)
                 control_modes.append(0)  # line mode
                 conditioning_scales.append(line_strength)
@@ -612,14 +854,20 @@ class FluxModel:
             # 如果没有启用任何模式，默认使用line+depth模式
             if not line_mode and not depth_mode:
                 control_image_depth = self.generate_depth_map(input_image_a)
-                control_image_canny = self.anyline(input_image_a, detect_resolution=1280)
+                control_image_canny = self.anyline(
+                    input_image_a, detect_resolution=1280
+                )
                 control_images = [control_image_depth, control_image_canny]
                 control_modes = [2, 0]
                 conditioning_scales = [0.2, 0.4]
 
             if qwen2_hidden_state_b is not None:
-                qwen2_hidden_state_b = qwen2_hidden_state_b[:, :qwen2_hidden_state_a.shape[1], :]
-                qwen2_hidden_state_a = qwen2_hidden_state_a[:, :qwen2_hidden_state_b.shape[1], :]
+                qwen2_hidden_state_b = qwen2_hidden_state_b[
+                    :, : qwen2_hidden_state_a.shape[1], :
+                ]
+                qwen2_hidden_state_a = qwen2_hidden_state_a[
+                    :, : qwen2_hidden_state_b.shape[1], :
+                ]
 
             gen_images = controlnet_pipeline(
                 image=input_image_a,
@@ -628,9 +876,19 @@ class FluxModel:
                 control_mode=control_modes,
                 controlnet_conditioning_scale=conditioning_scales,
                 strength=denoise_strength,
-                prompt_embeds=qwen2_hidden_state_b.repeat(batch_size, 1, 1) if qwen2_hidden_state_b is not None else qwen2_hidden_state_a.repeat(batch_size, 1, 1),
-                t5_prompt_embeds=t5_prompt_embeds.repeat(batch_size, 1, 1) if t5_prompt_embeds is not None else None,
-                prompt_embeds_control=qwen2_hidden_state_a.repeat(batch_size, 1, 1),
+                prompt_embeds=(
+                    qwen2_hidden_state_b.repeat(batch_size, 1, 1)
+                    if qwen2_hidden_state_b is not None
+                    else qwen2_hidden_state_a.repeat(batch_size, 1, 1)
+                ),
+                t5_prompt_embeds=(
+                    t5_prompt_embeds.repeat(batch_size, 1, 1)
+                    if t5_prompt_embeds is not None
+                    else None
+                ),
+                prompt_embeds_control=qwen2_hidden_state_a.repeat(
+                    batch_size, 1, 1
+                ),
                 pooled_prompt_embeds=pooled_prompt_embeds,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,

@@ -19,13 +19,11 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from diffusers.utils import is_torch_version
-from .embeddings import get_activation
-from .embeddings import (
-    CombinedTimestepLabelEmbeddings,
-    PixArtAlphaCombinedTimestepSizeEmbeddings,
-)
+
+from .embeddings import (CombinedTimestepLabelEmbeddings,
+                         PixArtAlphaCombinedTimestepSizeEmbeddings,
+                         get_activation)
 
 
 class AdaLayerNorm(nn.Module):
@@ -72,19 +70,31 @@ class AdaLayerNormZero(nn.Module):
         num_embeddings (`int`): The size of the embeddings dictionary.
     """
 
-    def __init__(self, embedding_dim: int, num_embeddings: Optional[int] = None, norm_type="layer_norm", bias=True):
+    def __init__(
+        self,
+        embedding_dim: int,
+        num_embeddings: Optional[int] = None,
+        norm_type="layer_norm",
+        bias=True,
+    ):
         super().__init__()
         if num_embeddings is not None:
-            self.emb = CombinedTimestepLabelEmbeddings(num_embeddings, embedding_dim)
+            self.emb = CombinedTimestepLabelEmbeddings(
+                num_embeddings, embedding_dim
+            )
         else:
             self.emb = None
 
         self.silu = nn.SiLU()
         self.linear = nn.Linear(embedding_dim, 6 * embedding_dim, bias=bias)
         if norm_type == "layer_norm":
-            self.norm = nn.LayerNorm(embedding_dim, elementwise_affine=False, eps=1e-6)
+            self.norm = nn.LayerNorm(
+                embedding_dim, elementwise_affine=False, eps=1e-6
+            )
         elif norm_type == "fp32_layer_norm":
-            self.norm = FP32LayerNorm(embedding_dim, elementwise_affine=False, bias=False)
+            self.norm = FP32LayerNorm(
+                embedding_dim, elementwise_affine=False, bias=False
+            )
         else:
             raise ValueError(
                 f"Unsupported `norm_type` ({norm_type}) provided. Supported ones are: 'layer_norm', 'fp32_layer_norm'."
@@ -97,11 +107,15 @@ class AdaLayerNormZero(nn.Module):
         class_labels: Optional[torch.LongTensor] = None,
         hidden_dtype: Optional[torch.dtype] = None,
         emb: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+    ]:
         if self.emb is not None:
             emb = self.emb(timestep, class_labels, hidden_dtype=hidden_dtype)
         emb = self.linear(self.silu(emb))
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb.chunk(6, dim=1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            emb.chunk(6, dim=1)
+        )
         x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
@@ -121,7 +135,9 @@ class AdaLayerNormZeroSingle(nn.Module):
         self.silu = nn.SiLU()
         self.linear = nn.Linear(embedding_dim, 3 * embedding_dim, bias=bias)
         if norm_type == "layer_norm":
-            self.norm = nn.LayerNorm(embedding_dim, elementwise_affine=False, eps=1e-6)
+            self.norm = nn.LayerNorm(
+                embedding_dim, elementwise_affine=False, eps=1e-6
+            )
         else:
             raise ValueError(
                 f"Unsupported `norm_type` ({norm_type}) provided. Supported ones are: 'layer_norm', 'fp32_layer_norm'."
@@ -131,7 +147,9 @@ class AdaLayerNormZeroSingle(nn.Module):
         self,
         x: torch.Tensor,
         emb: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+    ]:
         emb = self.linear(self.silu(emb))
         shift_msa, scale_msa, gate_msa = emb.chunk(3, dim=1)
         x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
@@ -146,7 +164,12 @@ class LuminaRMSNormZero(nn.Module):
         embedding_dim (`int`): The size of each embedding vector.
     """
 
-    def __init__(self, embedding_dim: int, norm_eps: float, norm_elementwise_affine: bool):
+    def __init__(
+        self,
+        embedding_dim: int,
+        norm_eps: float,
+        norm_elementwise_affine: bool,
+    ):
         super().__init__()
         self.silu = nn.SiLU()
         self.linear = nn.Linear(
@@ -154,7 +177,11 @@ class LuminaRMSNormZero(nn.Module):
             4 * embedding_dim,
             bias=True,
         )
-        self.norm = RMSNorm(embedding_dim, eps=norm_eps, elementwise_affine=norm_elementwise_affine)
+        self.norm = RMSNorm(
+            embedding_dim,
+            eps=norm_eps,
+            elementwise_affine=norm_elementwise_affine,
+        )
 
     def forward(
         self,
@@ -180,11 +207,15 @@ class AdaLayerNormSingle(nn.Module):
         use_additional_conditions (`bool`): To use additional conditions for normalization or not.
     """
 
-    def __init__(self, embedding_dim: int, use_additional_conditions: bool = False):
+    def __init__(
+        self, embedding_dim: int, use_additional_conditions: bool = False
+    ):
         super().__init__()
 
         self.emb = PixArtAlphaCombinedTimestepSizeEmbeddings(
-            embedding_dim, size_emb_dim=embedding_dim // 3, use_additional_conditions=use_additional_conditions
+            embedding_dim,
+            size_emb_dim=embedding_dim // 3,
+            use_additional_conditions=use_additional_conditions,
         )
 
         self.silu = nn.SiLU()
@@ -196,9 +227,16 @@ class AdaLayerNormSingle(nn.Module):
         added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
         batch_size: Optional[int] = None,
         hidden_dtype: Optional[torch.dtype] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+    ]:
         # No modulation happening here.
-        embedded_timestep = self.emb(timestep, **added_cond_kwargs, batch_size=batch_size, hidden_dtype=hidden_dtype)
+        embedded_timestep = self.emb(
+            timestep,
+            **added_cond_kwargs,
+            batch_size=batch_size,
+            hidden_dtype=hidden_dtype,
+        )
         return self.linear(self.silu(embedded_timestep)), embedded_timestep
 
 
@@ -215,7 +253,12 @@ class AdaGroupNorm(nn.Module):
     """
 
     def __init__(
-        self, embedding_dim: int, out_dim: int, num_groups: int, act_fn: Optional[str] = None, eps: float = 1e-5
+        self,
+        embedding_dim: int,
+        out_dim: int,
+        num_groups: int,
+        act_fn: Optional[str] = None,
+        eps: float = 1e-5,
     ):
         super().__init__()
         self.num_groups = num_groups
@@ -257,7 +300,9 @@ class AdaLayerNormContinuous(nn.Module):
     ):
         super().__init__()
         self.silu = nn.SiLU()
-        self.linear = nn.Linear(conditioning_embedding_dim, embedding_dim * 2, bias=bias)
+        self.linear = nn.Linear(
+            conditioning_embedding_dim, embedding_dim * 2, bias=bias
+        )
         if norm_type == "layer_norm":
             self.norm = LayerNorm(embedding_dim, eps, elementwise_affine, bias)
         elif norm_type == "rms_norm":
@@ -265,7 +310,9 @@ class AdaLayerNormContinuous(nn.Module):
         else:
             raise ValueError(f"unknown norm_type {norm_type}")
 
-    def forward(self, x: torch.Tensor, conditioning_embedding: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, conditioning_embedding: torch.Tensor
+    ) -> torch.Tensor:
         # convert back to the original dtype in case `conditioning_embedding`` is upcasted to float32 (needed for hunyuanDiT)
         emb = self.linear(self.silu(conditioning_embedding).to(x.dtype))
         scale, shift = torch.chunk(emb, 2, dim=1)
@@ -292,7 +339,9 @@ class LuminaLayerNormContinuous(nn.Module):
         super().__init__()
         # AdaLN
         self.silu = nn.SiLU()
-        self.linear_1 = nn.Linear(conditioning_embedding_dim, embedding_dim, bias=bias)
+        self.linear_1 = nn.Linear(
+            conditioning_embedding_dim, embedding_dim, bias=bias
+        )
         if norm_type == "layer_norm":
             self.norm = LayerNorm(embedding_dim, eps, elementwise_affine, bias)
         else:
@@ -327,7 +376,13 @@ else:
     # Has optional bias parameter compared to torch layer norm
     # TODO: replace with torch layernorm once min required torch version >= 2.1
     class LayerNorm(nn.Module):
-        def __init__(self, dim, eps: float = 1e-5, elementwise_affine: bool = True, bias: bool = True):
+        def __init__(
+            self,
+            dim,
+            eps: float = 1e-5,
+            elementwise_affine: bool = True,
+            bias: bool = True,
+        ):
             super().__init__()
 
             self.eps = eps
@@ -345,7 +400,9 @@ else:
                 self.bias = None
 
         def forward(self, input):
-            return F.layer_norm(input, self.dim, self.weight, self.bias, self.eps)
+            return F.layer_norm(
+                input, self.dim, self.weight, self.bias, self.eps
+            )
 
 
 class RMSNorm(nn.Module):
@@ -366,7 +423,9 @@ class RMSNorm(nn.Module):
 
     def forward(self, hidden_states):
         input_dtype = hidden_states.dtype
-        variance = hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        variance = (
+            hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        )
         hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
 
         if self.weight is not None:

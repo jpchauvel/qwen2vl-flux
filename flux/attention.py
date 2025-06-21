@@ -15,20 +15,22 @@ from typing import Any, Dict, Optional
 
 import torch
 import torch.nn.functional as F
-from torch import nn
-
 from diffusers.utils import deprecate, logging
 from diffusers.utils.torch_utils import maybe_allow_in_graph
+from torch import nn
+
 from .activations import GEGLU, GELU, ApproximateGELU, FP32SiLU, SwiGLU
 from .attention_processor import Attention, JointAttnProcessor2_0
 from .embeddings import SinusoidalPositionalEmbedding
-from .normalization import AdaLayerNorm, AdaLayerNormContinuous, AdaLayerNormZero, RMSNorm
-
+from .normalization import (AdaLayerNorm, AdaLayerNormContinuous,
+                            AdaLayerNormZero, RMSNorm)
 
 logger = logging.get_logger(__name__)
 
 
-def _chunked_feed_forward(ff: nn.Module, hidden_states: torch.Tensor, chunk_dim: int, chunk_size: int):
+def _chunked_feed_forward(
+    ff: nn.Module, hidden_states: torch.Tensor, chunk_dim: int, chunk_size: int
+):
     # "feed_forward_chunk_size" can be used to save memory
     if hidden_states.shape[chunk_dim] % chunk_size != 0:
         raise ValueError(
@@ -37,7 +39,10 @@ def _chunked_feed_forward(ff: nn.Module, hidden_states: torch.Tensor, chunk_dim:
 
     num_chunks = hidden_states.shape[chunk_dim] // chunk_size
     ff_output = torch.cat(
-        [ff(hid_slice) for hid_slice in hidden_states.chunk(num_chunks, dim=chunk_dim)],
+        [
+            ff(hid_slice)
+            for hid_slice in hidden_states.chunk(num_chunks, dim=chunk_dim)
+        ],
         dim=chunk_dim,
     )
     return ff_output
@@ -55,13 +60,17 @@ class GatedSelfAttentionDense(nn.Module):
         d_head (`int`): The number of channels in each head.
     """
 
-    def __init__(self, query_dim: int, context_dim: int, n_heads: int, d_head: int):
+    def __init__(
+        self, query_dim: int, context_dim: int, n_heads: int, d_head: int
+    ):
         super().__init__()
 
         # we need a linear projection since we need cat visual feature and obj feature
         self.linear = nn.Linear(context_dim, query_dim)
 
-        self.attn = Attention(query_dim=query_dim, heads=n_heads, dim_head=d_head)
+        self.attn = Attention(
+            query_dim=query_dim, heads=n_heads, dim_head=d_head
+        )
         self.ff = FeedForward(query_dim, activation_fn="geglu")
 
         self.norm1 = nn.LayerNorm(query_dim)
@@ -79,7 +88,13 @@ class GatedSelfAttentionDense(nn.Module):
         n_visual = x.shape[1]
         objs = self.linear(objs)
 
-        x = x + self.alpha_attn.tanh() * self.attn(self.norm1(torch.cat([x, objs], dim=1)))[:, :n_visual, :]
+        x = (
+            x
+            + self.alpha_attn.tanh()
+            * self.attn(self.norm1(torch.cat([x, objs], dim=1)))[
+                :, :n_visual, :
+            ]
+        )
         x = x + self.alpha_dense.tanh() * self.ff(self.norm2(x))
 
         return x
@@ -100,17 +115,30 @@ class JointTransformerBlock(nn.Module):
             processing of `context` conditions.
     """
 
-    def __init__(self, dim, num_attention_heads, attention_head_dim, context_pre_only=False):
+    def __init__(
+        self,
+        dim,
+        num_attention_heads,
+        attention_head_dim,
+        context_pre_only=False,
+    ):
         super().__init__()
 
         self.context_pre_only = context_pre_only
-        context_norm_type = "ada_norm_continous" if context_pre_only else "ada_norm_zero"
+        context_norm_type = (
+            "ada_norm_continous" if context_pre_only else "ada_norm_zero"
+        )
 
         self.norm1 = AdaLayerNormZero(dim)
 
         if context_norm_type == "ada_norm_continous":
             self.norm1_context = AdaLayerNormContinuous(
-                dim, dim, elementwise_affine=False, eps=1e-6, bias=True, norm_type="layer_norm"
+                dim,
+                dim,
+                elementwise_affine=False,
+                eps=1e-6,
+                bias=True,
+                norm_type="layer_norm",
             )
         elif context_norm_type == "ada_norm_zero":
             self.norm1_context = AdaLayerNormZero(dim)
@@ -137,11 +165,17 @@ class JointTransformerBlock(nn.Module):
         )
 
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.ff = FeedForward(dim=dim, dim_out=dim, activation_fn="gelu-approximate")
+        self.ff = FeedForward(
+            dim=dim, dim_out=dim, activation_fn="gelu-approximate"
+        )
 
         if not context_pre_only:
-            self.norm2_context = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-            self.ff_context = FeedForward(dim=dim, dim_out=dim, activation_fn="gelu-approximate")
+            self.norm2_context = nn.LayerNorm(
+                dim, elementwise_affine=False, eps=1e-6
+            )
+            self.ff_context = FeedForward(
+                dim=dim, dim_out=dim, activation_fn="gelu-approximate"
+            )
         else:
             self.norm2_context = None
             self.ff_context = None
@@ -157,20 +191,32 @@ class JointTransformerBlock(nn.Module):
         self._chunk_dim = dim
 
     def forward(
-        self, hidden_states: torch.FloatTensor, encoder_hidden_states: torch.FloatTensor, temb: torch.FloatTensor
+        self,
+        hidden_states: torch.FloatTensor,
+        encoder_hidden_states: torch.FloatTensor,
+        temb: torch.FloatTensor,
     ):
-        norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(hidden_states, emb=temb)
+        norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self.norm1(hidden_states, emb=temb)
+        )
 
         if self.context_pre_only:
-            norm_encoder_hidden_states = self.norm1_context(encoder_hidden_states, temb)
-        else:
-            norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.norm1_context(
-                encoder_hidden_states, emb=temb
+            norm_encoder_hidden_states = self.norm1_context(
+                encoder_hidden_states, temb
             )
+        else:
+            (
+                norm_encoder_hidden_states,
+                c_gate_msa,
+                c_shift_mlp,
+                c_scale_mlp,
+                c_gate_mlp,
+            ) = self.norm1_context(encoder_hidden_states, emb=temb)
 
         # Attention.
         attn_output, context_attn_output = self.attn(
-            hidden_states=norm_hidden_states, encoder_hidden_states=norm_encoder_hidden_states
+            hidden_states=norm_hidden_states,
+            encoder_hidden_states=norm_encoder_hidden_states,
         )
 
         # Process attention outputs for the `hidden_states`.
@@ -178,10 +224,14 @@ class JointTransformerBlock(nn.Module):
         hidden_states = hidden_states + attn_output
 
         norm_hidden_states = self.norm2(hidden_states)
-        norm_hidden_states = norm_hidden_states * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+        norm_hidden_states = (
+            norm_hidden_states * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+        )
         if self._chunk_size is not None:
             # "feed_forward_chunk_size" can be used to save memory
-            ff_output = _chunked_feed_forward(self.ff, norm_hidden_states, self._chunk_dim, self._chunk_size)
+            ff_output = _chunked_feed_forward(
+                self.ff, norm_hidden_states, self._chunk_dim, self._chunk_size
+            )
         else:
             ff_output = self.ff(norm_hidden_states)
         ff_output = gate_mlp.unsqueeze(1) * ff_output
@@ -195,16 +245,27 @@ class JointTransformerBlock(nn.Module):
             context_attn_output = c_gate_msa.unsqueeze(1) * context_attn_output
             encoder_hidden_states = encoder_hidden_states + context_attn_output
 
-            norm_encoder_hidden_states = self.norm2_context(encoder_hidden_states)
-            norm_encoder_hidden_states = norm_encoder_hidden_states * (1 + c_scale_mlp[:, None]) + c_shift_mlp[:, None]
+            norm_encoder_hidden_states = self.norm2_context(
+                encoder_hidden_states
+            )
+            norm_encoder_hidden_states = (
+                norm_encoder_hidden_states * (1 + c_scale_mlp[:, None])
+                + c_shift_mlp[:, None]
+            )
             if self._chunk_size is not None:
                 # "feed_forward_chunk_size" can be used to save memory
                 context_ff_output = _chunked_feed_forward(
-                    self.ff_context, norm_encoder_hidden_states, self._chunk_dim, self._chunk_size
+                    self.ff_context,
+                    norm_encoder_hidden_states,
+                    self._chunk_dim,
+                    self._chunk_size,
                 )
             else:
                 context_ff_output = self.ff_context(norm_encoder_hidden_states)
-            encoder_hidden_states = encoder_hidden_states + c_gate_mlp.unsqueeze(1) * context_ff_output
+            encoder_hidden_states = (
+                encoder_hidden_states
+                + c_gate_mlp.unsqueeze(1) * context_ff_output
+            )
 
         return encoder_hidden_states, hidden_states
 
@@ -275,13 +336,20 @@ class BasicTransformerBlock(nn.Module):
         self.only_cross_attention = only_cross_attention
 
         # We keep these boolean flags for backward-compatibility.
-        self.use_ada_layer_norm_zero = (num_embeds_ada_norm is not None) and norm_type == "ada_norm_zero"
-        self.use_ada_layer_norm = (num_embeds_ada_norm is not None) and norm_type == "ada_norm"
+        self.use_ada_layer_norm_zero = (
+            num_embeds_ada_norm is not None
+        ) and norm_type == "ada_norm_zero"
+        self.use_ada_layer_norm = (
+            num_embeds_ada_norm is not None
+        ) and norm_type == "ada_norm"
         self.use_ada_layer_norm_single = norm_type == "ada_norm_single"
         self.use_layer_norm = norm_type == "layer_norm"
         self.use_ada_layer_norm_continuous = norm_type == "ada_norm_continuous"
 
-        if norm_type in ("ada_norm", "ada_norm_zero") and num_embeds_ada_norm is None:
+        if (
+            norm_type in ("ada_norm", "ada_norm_zero")
+            and num_embeds_ada_norm is None
+        ):
             raise ValueError(
                 f"`norm_type` is set to {norm_type}, but `num_embeds_ada_norm` is not defined. Please make sure to"
                 f" define `num_embeds_ada_norm` if setting `norm_type` to {norm_type}."
@@ -296,7 +364,9 @@ class BasicTransformerBlock(nn.Module):
             )
 
         if positional_embeddings == "sinusoidal":
-            self.pos_embed = SinusoidalPositionalEmbedding(dim, max_seq_length=num_positional_embeddings)
+            self.pos_embed = SinusoidalPositionalEmbedding(
+                dim, max_seq_length=num_positional_embeddings
+            )
         else:
             self.pos_embed = None
 
@@ -316,7 +386,9 @@ class BasicTransformerBlock(nn.Module):
                 "rms_norm",
             )
         else:
-            self.norm1 = nn.LayerNorm(dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps)
+            self.norm1 = nn.LayerNorm(
+                dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps
+            )
 
         self.attn1 = Attention(
             query_dim=dim,
@@ -324,7 +396,9 @@ class BasicTransformerBlock(nn.Module):
             dim_head=attention_head_dim,
             dropout=dropout,
             bias=attention_bias,
-            cross_attention_dim=cross_attention_dim if only_cross_attention else None,
+            cross_attention_dim=(
+                cross_attention_dim if only_cross_attention else None
+            ),
             upcast_attention=upcast_attention,
             out_bias=attention_out_bias,
         )
@@ -346,11 +420,15 @@ class BasicTransformerBlock(nn.Module):
                     "rms_norm",
                 )
             else:
-                self.norm2 = nn.LayerNorm(dim, norm_eps, norm_elementwise_affine)
+                self.norm2 = nn.LayerNorm(
+                    dim, norm_eps, norm_elementwise_affine
+                )
 
             self.attn2 = Attention(
                 query_dim=dim,
-                cross_attention_dim=cross_attention_dim if not double_self_attention else None,
+                cross_attention_dim=(
+                    cross_attention_dim if not double_self_attention else None
+                ),
                 heads=num_attention_heads,
                 dim_head=attention_head_dim,
                 dropout=dropout,
@@ -360,7 +438,9 @@ class BasicTransformerBlock(nn.Module):
             )  # is self-attn if encoder_hidden_states is none
         else:
             if norm_type == "ada_norm_single":  # For Latte
-                self.norm2 = nn.LayerNorm(dim, norm_eps, norm_elementwise_affine)
+                self.norm2 = nn.LayerNorm(
+                    dim, norm_eps, norm_elementwise_affine
+                )
             else:
                 self.norm2 = None
             self.attn2 = None
@@ -392,11 +472,18 @@ class BasicTransformerBlock(nn.Module):
 
         # 4. Fuser
         if attention_type == "gated" or attention_type == "gated-text-image":
-            self.fuser = GatedSelfAttentionDense(dim, cross_attention_dim, num_attention_heads, attention_head_dim)
+            self.fuser = GatedSelfAttentionDense(
+                dim,
+                cross_attention_dim,
+                num_attention_heads,
+                attention_head_dim,
+            )
 
         # 5. Scale-shift for PixArt-Alpha.
         if norm_type == "ada_norm_single":
-            self.scale_shift_table = nn.Parameter(torch.randn(6, dim) / dim**0.5)
+            self.scale_shift_table = nn.Parameter(
+                torch.randn(6, dim) / dim**0.5
+            )
 
         # let chunk size default to None
         self._chunk_size = None
@@ -420,7 +507,9 @@ class BasicTransformerBlock(nn.Module):
     ) -> torch.Tensor:
         if cross_attention_kwargs is not None:
             if cross_attention_kwargs.get("scale", None) is not None:
-                logger.warning("Passing `scale` to `cross_attention_kwargs` is deprecated. `scale` will be ignored.")
+                logger.warning(
+                    "Passing `scale` to `cross_attention_kwargs` is deprecated. `scale` will be ignored."
+                )
 
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 0. Self-Attention
@@ -429,19 +518,29 @@ class BasicTransformerBlock(nn.Module):
         if self.norm_type == "ada_norm":
             norm_hidden_states = self.norm1(hidden_states, timestep)
         elif self.norm_type == "ada_norm_zero":
-            norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(
-                hidden_states, timestep, class_labels, hidden_dtype=hidden_states.dtype
+            norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+                self.norm1(
+                    hidden_states,
+                    timestep,
+                    class_labels,
+                    hidden_dtype=hidden_states.dtype,
+                )
             )
         elif self.norm_type in ["layer_norm", "layer_norm_i2vgen"]:
             norm_hidden_states = self.norm1(hidden_states)
         elif self.norm_type == "ada_norm_continuous":
-            norm_hidden_states = self.norm1(hidden_states, added_cond_kwargs["pooled_text_emb"])
+            norm_hidden_states = self.norm1(
+                hidden_states, added_cond_kwargs["pooled_text_emb"]
+            )
         elif self.norm_type == "ada_norm_single":
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-                self.scale_shift_table[None] + timestep.reshape(batch_size, 6, -1)
+                self.scale_shift_table[None]
+                + timestep.reshape(batch_size, 6, -1)
             ).chunk(6, dim=1)
             norm_hidden_states = self.norm1(hidden_states)
-            norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
+            norm_hidden_states = (
+                norm_hidden_states * (1 + scale_msa) + shift_msa
+            )
         else:
             raise ValueError("Incorrect norm used")
 
@@ -449,12 +548,18 @@ class BasicTransformerBlock(nn.Module):
             norm_hidden_states = self.pos_embed(norm_hidden_states)
 
         # 1. Prepare GLIGEN inputs
-        cross_attention_kwargs = cross_attention_kwargs.copy() if cross_attention_kwargs is not None else {}
+        cross_attention_kwargs = (
+            cross_attention_kwargs.copy()
+            if cross_attention_kwargs is not None
+            else {}
+        )
         gligen_kwargs = cross_attention_kwargs.pop("gligen", None)
 
         attn_output = self.attn1(
             norm_hidden_states,
-            encoder_hidden_states=encoder_hidden_states if self.only_cross_attention else None,
+            encoder_hidden_states=(
+                encoder_hidden_states if self.only_cross_attention else None
+            ),
             attention_mask=attention_mask,
             **cross_attention_kwargs,
         )
@@ -476,18 +581,27 @@ class BasicTransformerBlock(nn.Module):
         if self.attn2 is not None:
             if self.norm_type == "ada_norm":
                 norm_hidden_states = self.norm2(hidden_states, timestep)
-            elif self.norm_type in ["ada_norm_zero", "layer_norm", "layer_norm_i2vgen"]:
+            elif self.norm_type in [
+                "ada_norm_zero",
+                "layer_norm",
+                "layer_norm_i2vgen",
+            ]:
                 norm_hidden_states = self.norm2(hidden_states)
             elif self.norm_type == "ada_norm_single":
                 # For PixArt norm2 isn't applied here:
                 # https://github.com/PixArt-alpha/PixArt-alpha/blob/0f55e922376d8b797edd44d25d0e7464b260dcab/diffusion/model/nets/PixArtMS.py#L70C1-L76C103
                 norm_hidden_states = hidden_states
             elif self.norm_type == "ada_norm_continuous":
-                norm_hidden_states = self.norm2(hidden_states, added_cond_kwargs["pooled_text_emb"])
+                norm_hidden_states = self.norm2(
+                    hidden_states, added_cond_kwargs["pooled_text_emb"]
+                )
             else:
                 raise ValueError("Incorrect norm")
 
-            if self.pos_embed is not None and self.norm_type != "ada_norm_single":
+            if (
+                self.pos_embed is not None
+                and self.norm_type != "ada_norm_single"
+            ):
                 norm_hidden_states = self.pos_embed(norm_hidden_states)
 
             attn_output = self.attn2(
@@ -501,20 +615,29 @@ class BasicTransformerBlock(nn.Module):
         # 4. Feed-forward
         # i2vgen doesn't have this norm 🤷‍♂️
         if self.norm_type == "ada_norm_continuous":
-            norm_hidden_states = self.norm3(hidden_states, added_cond_kwargs["pooled_text_emb"])
+            norm_hidden_states = self.norm3(
+                hidden_states, added_cond_kwargs["pooled_text_emb"]
+            )
         elif not self.norm_type == "ada_norm_single":
             norm_hidden_states = self.norm3(hidden_states)
 
         if self.norm_type == "ada_norm_zero":
-            norm_hidden_states = norm_hidden_states * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+            norm_hidden_states = (
+                norm_hidden_states * (1 + scale_mlp[:, None])
+                + shift_mlp[:, None]
+            )
 
         if self.norm_type == "ada_norm_single":
             norm_hidden_states = self.norm2(hidden_states)
-            norm_hidden_states = norm_hidden_states * (1 + scale_mlp) + shift_mlp
+            norm_hidden_states = (
+                norm_hidden_states * (1 + scale_mlp) + shift_mlp
+            )
 
         if self._chunk_size is not None:
             # "feed_forward_chunk_size" can be used to save memory
-            ff_output = _chunked_feed_forward(self.ff, norm_hidden_states, self._chunk_dim, self._chunk_size)
+            ff_output = _chunked_feed_forward(
+                self.ff, norm_hidden_states, self._chunk_dim, self._chunk_size
+            )
         else:
             ff_output = self.ff(norm_hidden_states)
 
@@ -557,7 +680,9 @@ class LuminaFeedForward(nn.Module):
         # custom hidden_size factor multiplier
         if ffn_dim_multiplier is not None:
             inner_dim = int(ffn_dim_multiplier * inner_dim)
-        inner_dim = multiple_of * ((inner_dim + multiple_of - 1) // multiple_of)
+        inner_dim = multiple_of * (
+            (inner_dim + multiple_of - 1) // multiple_of
+        )
 
         self.linear_1 = nn.Linear(
             dim,
@@ -665,15 +790,21 @@ class TemporalBasicTransformerBlock(nn.Module):
         batch_frames, seq_length, channels = hidden_states.shape
         batch_size = batch_frames // num_frames
 
-        hidden_states = hidden_states[None, :].reshape(batch_size, num_frames, seq_length, channels)
+        hidden_states = hidden_states[None, :].reshape(
+            batch_size, num_frames, seq_length, channels
+        )
         hidden_states = hidden_states.permute(0, 2, 1, 3)
-        hidden_states = hidden_states.reshape(batch_size * seq_length, num_frames, channels)
+        hidden_states = hidden_states.reshape(
+            batch_size * seq_length, num_frames, channels
+        )
 
         residual = hidden_states
         hidden_states = self.norm_in(hidden_states)
 
         if self._chunk_size is not None:
-            hidden_states = _chunked_feed_forward(self.ff_in, hidden_states, self._chunk_dim, self._chunk_size)
+            hidden_states = _chunked_feed_forward(
+                self.ff_in, hidden_states, self._chunk_dim, self._chunk_size
+            )
         else:
             hidden_states = self.ff_in(hidden_states)
 
@@ -681,20 +812,26 @@ class TemporalBasicTransformerBlock(nn.Module):
             hidden_states = hidden_states + residual
 
         norm_hidden_states = self.norm1(hidden_states)
-        attn_output = self.attn1(norm_hidden_states, encoder_hidden_states=None)
+        attn_output = self.attn1(
+            norm_hidden_states, encoder_hidden_states=None
+        )
         hidden_states = attn_output + hidden_states
 
         # 3. Cross-Attention
         if self.attn2 is not None:
             norm_hidden_states = self.norm2(hidden_states)
-            attn_output = self.attn2(norm_hidden_states, encoder_hidden_states=encoder_hidden_states)
+            attn_output = self.attn2(
+                norm_hidden_states, encoder_hidden_states=encoder_hidden_states
+            )
             hidden_states = attn_output + hidden_states
 
         # 4. Feed-forward
         norm_hidden_states = self.norm3(hidden_states)
 
         if self._chunk_size is not None:
-            ff_output = _chunked_feed_forward(self.ff, norm_hidden_states, self._chunk_dim, self._chunk_size)
+            ff_output = _chunked_feed_forward(
+                self.ff, norm_hidden_states, self._chunk_dim, self._chunk_size
+            )
         else:
             ff_output = self.ff(norm_hidden_states)
 
@@ -703,9 +840,13 @@ class TemporalBasicTransformerBlock(nn.Module):
         else:
             hidden_states = ff_output
 
-        hidden_states = hidden_states[None, :].reshape(batch_size, seq_length, num_frames, channels)
+        hidden_states = hidden_states[None, :].reshape(
+            batch_size, seq_length, num_frames, channels
+        )
         hidden_states = hidden_states.permute(0, 2, 1, 3)
-        hidden_states = hidden_states.reshape(batch_size * num_frames, seq_length, channels)
+        hidden_states = hidden_states.reshape(
+            batch_size * num_frames, seq_length, channels
+        )
 
         return hidden_states
 
@@ -725,7 +866,9 @@ class SkipFFTransformerBlock(nn.Module):
     ):
         super().__init__()
         if kv_input_dim != dim:
-            self.kv_mapper = nn.Linear(kv_input_dim, dim, kv_input_dim_proj_use_bias)
+            self.kv_mapper = nn.Linear(
+                kv_input_dim, dim, kv_input_dim_proj_use_bias
+            )
         else:
             self.kv_mapper = None
 
@@ -753,11 +896,19 @@ class SkipFFTransformerBlock(nn.Module):
             out_bias=attention_out_bias,
         )
 
-    def forward(self, hidden_states, encoder_hidden_states, cross_attention_kwargs):
-        cross_attention_kwargs = cross_attention_kwargs.copy() if cross_attention_kwargs is not None else {}
+    def forward(
+        self, hidden_states, encoder_hidden_states, cross_attention_kwargs
+    ):
+        cross_attention_kwargs = (
+            cross_attention_kwargs.copy()
+            if cross_attention_kwargs is not None
+            else {}
+        )
 
         if self.kv_mapper is not None:
-            encoder_hidden_states = self.kv_mapper(F.silu(encoder_hidden_states))
+            encoder_hidden_states = self.kv_mapper(
+                F.silu(encoder_hidden_states)
+            )
 
         norm_hidden_states = self.norm1(hidden_states)
 
@@ -834,7 +985,9 @@ class FeedForward(nn.Module):
         if final_dropout:
             self.net.append(nn.Dropout(dropout))
 
-    def forward(self, hidden_states: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+    def forward(
+        self, hidden_states: torch.Tensor, *args, **kwargs
+    ) -> torch.Tensor:
         if len(args) > 0 or kwargs.get("scale", None) is not None:
             deprecation_message = "The `scale` argument is deprecated and will be ignored. Please remove it, as passing it will raise an error in the future. `scale` should directly be passed while calling the underlying pipeline component i.e., via `cross_attention_kwargs`."
             deprecate("scale", "1.0.0", deprecation_message)

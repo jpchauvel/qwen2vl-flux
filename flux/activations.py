@@ -15,11 +15,9 @@
 
 import torch
 import torch.nn.functional as F
-from torch import nn
-
 from diffusers.utils import deprecate
 from diffusers.utils.import_utils import is_torch_npu_available
-
+from torch import nn
 
 if is_torch_npu_available():
     import torch_npu
@@ -73,7 +71,13 @@ class GELU(nn.Module):
         bias (`bool`, defaults to True): Whether to use a bias in the linear layer.
     """
 
-    def __init__(self, dim_in: int, dim_out: int, approximate: str = "none", bias: bool = True):
+    def __init__(
+        self,
+        dim_in: int,
+        dim_out: int,
+        approximate: str = "none",
+        bias: bool = True,
+    ):
         super().__init__()
         self.proj = nn.Linear(dim_in, dim_out, bias=bias)
         self.approximate = approximate
@@ -82,7 +86,9 @@ class GELU(nn.Module):
         if gate.device.type != "mps":
             return F.gelu(gate, approximate=self.approximate)
         # mps: gelu is not implemented for float16
-        return F.gelu(gate.to(dtype=torch.float32), approximate=self.approximate).to(dtype=gate.dtype)
+        return F.gelu(
+            gate.to(dtype=torch.float32), approximate=self.approximate
+        ).to(dtype=gate.dtype)
 
     def forward(self, hidden_states):
         hidden_states = self.proj(hidden_states)

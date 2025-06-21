@@ -26,9 +26,10 @@ from typing import List, Optional, Union
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.image_utils import ImageInput, VideoInput
 from transformers.processing_utils import ProcessorMixin
-from transformers.tokenization_utils_base import PaddingStrategy, PreTokenizedInput, TextInput, TruncationStrategy
+from transformers.tokenization_utils_base import (PaddingStrategy,
+                                                  PreTokenizedInput, TextInput,
+                                                  TruncationStrategy)
 from transformers.utils import TensorType, logging
-
 
 logger = logging.get_logger(__name__)
 
@@ -54,13 +55,26 @@ class Qwen2VLProcessor(ProcessorMixin):
     image_processor_class = "Qwen2VLImageProcessor"
     tokenizer_class = ("Qwen2Tokenizer", "Qwen2TokenizerFast")
 
-    def __init__(self, image_processor=None, tokenizer=None, chat_template=None, **kwargs):
-        super().__init__(image_processor, tokenizer, chat_template=chat_template)
+    def __init__(
+        self,
+        image_processor=None,
+        tokenizer=None,
+        chat_template=None,
+        **kwargs,
+    ):
+        super().__init__(
+            image_processor, tokenizer, chat_template=chat_template
+        )
 
     def __call__(
         self,
         images: ImageInput = None,
-        text: Union[TextInput, PreTokenizedInput, List[TextInput], List[PreTokenizedInput]] = None,
+        text: Union[
+            TextInput,
+            PreTokenizedInput,
+            List[TextInput],
+            List[PreTokenizedInput],
+        ] = None,
         videos: VideoInput = None,
         padding: Union[bool, str, PaddingStrategy] = False,
         truncation: Union[bool, str, TruncationStrategy] = None,
@@ -118,14 +132,18 @@ class Qwen2VLProcessor(ProcessorMixin):
             - **video_grid_thw** -- List of video 3D grid in LLM. Returned when `videos` is not `None`.
         """
         if images is not None:
-            image_inputs = self.image_processor(images=images, videos=None, return_tensors=return_tensors)
+            image_inputs = self.image_processor(
+                images=images, videos=None, return_tensors=return_tensors
+            )
             image_grid_thw = image_inputs["image_grid_thw"]
         else:
             image_inputs = {}
             image_grid_thw = None
 
         if videos is not None:
-            videos_inputs = self.image_processor(images=None, videos=videos, return_tensors=return_tensors)
+            videos_inputs = self.image_processor(
+                images=None, videos=videos, return_tensors=return_tensors
+            )
             video_grid_thw = videos_inputs["video_grid_thw"]
         else:
             videos_inputs = {}
@@ -140,7 +158,10 @@ class Qwen2VLProcessor(ProcessorMixin):
             for i in range(len(text)):
                 while "<|image_pad|>" in text[i]:
                     text[i] = text[i].replace(
-                        "<|image_pad|>", "<|placeholder|>" * (image_grid_thw[index].prod() // merge_length), 1
+                        "<|image_pad|>",
+                        "<|placeholder|>"
+                        * (image_grid_thw[index].prod() // merge_length),
+                        1,
                     )
                     index += 1
                 text[i] = text[i].replace("<|placeholder|>", "<|image_pad|>")
@@ -151,16 +172,25 @@ class Qwen2VLProcessor(ProcessorMixin):
             for i in range(len(text)):
                 while "<|video_pad|>" in text[i]:
                     text[i] = text[i].replace(
-                        "<|video_pad|>", "<|placeholder|>" * (video_grid_thw[index].prod() // merge_length), 1
+                        "<|video_pad|>",
+                        "<|placeholder|>"
+                        * (video_grid_thw[index].prod() // merge_length),
+                        1,
                     )
                     index += 1
                 text[i] = text[i].replace("<|placeholder|>", "<|video_pad|>")
 
         text_inputs = self.tokenizer(
-            text, return_tensors=return_tensors, padding=padding, truncation=truncation, max_length=max_length
+            text,
+            return_tensors=return_tensors,
+            padding=padding,
+            truncation=truncation,
+            max_length=max_length,
         )
 
-        return BatchFeature(data={**text_inputs, **image_inputs, **videos_inputs})
+        return BatchFeature(
+            data={**text_inputs, **image_inputs, **videos_inputs}
+        )
 
     def batch_decode(self, *args, **kwargs):
         """
@@ -180,4 +210,6 @@ class Qwen2VLProcessor(ProcessorMixin):
     def model_input_names(self):
         tokenizer_input_names = self.tokenizer.model_input_names
         image_processor_input_names = self.image_processor.model_input_names
-        return list(dict.fromkeys(tokenizer_input_names + image_processor_input_names))
+        return list(
+            dict.fromkeys(tokenizer_input_names + image_processor_input_names)
+        )

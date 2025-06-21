@@ -21,24 +21,15 @@ from typing import Callable, Dict, List, Optional, Union
 import safetensors
 import torch
 import torch.nn as nn
+from diffusers.models.modeling_utils import ModelMixin, load_state_dict
+from diffusers.utils import (USE_PEFT_BACKEND, _get_model_file,
+                             delete_adapter_layers, deprecate,
+                             is_accelerate_available, is_peft_available,
+                             is_transformers_available, logging,
+                             recurse_remove_peft_layers, set_adapter_layers,
+                             set_weights_and_activate_adapters)
 from huggingface_hub import model_info
 from huggingface_hub.constants import HF_HUB_OFFLINE
-
-from diffusers.models.modeling_utils import ModelMixin, load_state_dict
-from diffusers.utils import (
-    USE_PEFT_BACKEND,
-    _get_model_file,
-    delete_adapter_layers,
-    deprecate,
-    is_accelerate_available,
-    is_peft_available,
-    is_transformers_available,
-    logging,
-    recurse_remove_peft_layers,
-    set_adapter_layers,
-    set_weights_and_activate_adapters,
-)
-
 
 if is_transformers_available():
     from transformers import PreTrainedModel
@@ -47,12 +38,15 @@ if is_peft_available():
     from peft.tuners.tuners_utils import BaseTunerLayer
 
 if is_accelerate_available():
-    from accelerate.hooks import AlignDevicesHook, CpuOffload, remove_hook_from_module
+    from accelerate.hooks import (AlignDevicesHook, CpuOffload,
+                                  remove_hook_from_module)
 
 logger = logging.get_logger(__name__)
 
 
-def fuse_text_encoder_lora(text_encoder, lora_scale=1.0, safe_fusing=False, adapter_names=None):
+def fuse_text_encoder_lora(
+    text_encoder, lora_scale=1.0, safe_fusing=False, adapter_names=None
+):
     """
     Fuses LoRAs for the text encoder.
 
@@ -76,10 +70,15 @@ def fuse_text_encoder_lora(text_encoder, lora_scale=1.0, safe_fusing=False, adap
 
             # For BC with previous PEFT versions, we need to check the signature
             # of the `merge` method to see if it supports the `adapter_names` argument.
-            supported_merge_kwargs = list(inspect.signature(module.merge).parameters)
+            supported_merge_kwargs = list(
+                inspect.signature(module.merge).parameters
+            )
             if "adapter_names" in supported_merge_kwargs:
                 merge_kwargs["adapter_names"] = adapter_names
-            elif "adapter_names" not in supported_merge_kwargs and adapter_names is not None:
+            elif (
+                "adapter_names" not in supported_merge_kwargs
+                and adapter_names is not None
+            ):
                 raise ValueError(
                     "The `adapter_names` argument is not supported with your PEFT version. "
                     "Please upgrade to the latest version of PEFT. `pip install -U peft`"
@@ -105,7 +104,9 @@ def unfuse_text_encoder_lora(text_encoder):
 def set_adapters_for_text_encoder(
     adapter_names: Union[List[str], str],
     text_encoder: Optional["PreTrainedModel"] = None,  # noqa: F821
-    text_encoder_weights: Optional[Union[float, List[float], List[None]]] = None,
+    text_encoder_weights: Optional[
+        Union[float, List[float], List[None]]
+    ] = None,
 ):
     """
     Sets the adapter layers for the text encoder.
@@ -141,12 +142,18 @@ def set_adapters_for_text_encoder(
 
         return weights
 
-    adapter_names = [adapter_names] if isinstance(adapter_names, str) else adapter_names
+    adapter_names = (
+        [adapter_names] if isinstance(adapter_names, str) else adapter_names
+    )
     text_encoder_weights = process_weights(adapter_names, text_encoder_weights)
-    set_weights_and_activate_adapters(text_encoder, adapter_names, text_encoder_weights)
+    set_weights_and_activate_adapters(
+        text_encoder, adapter_names, text_encoder_weights
+    )
 
 
-def disable_lora_for_text_encoder(text_encoder: Optional["PreTrainedModel"] = None):
+def disable_lora_for_text_encoder(
+    text_encoder: Optional["PreTrainedModel"] = None,
+):
     """
     Disables the LoRA layers for the text encoder.
 
@@ -160,7 +167,9 @@ def disable_lora_for_text_encoder(text_encoder: Optional["PreTrainedModel"] = No
     set_adapter_layers(text_encoder, enabled=False)
 
 
-def enable_lora_for_text_encoder(text_encoder: Optional["PreTrainedModel"] = None):
+def enable_lora_for_text_encoder(
+    text_encoder: Optional["PreTrainedModel"] = None,
+):
     """
     Enables the LoRA layers for the text encoder.
 
@@ -216,20 +225,28 @@ class LoraBaseMixin:
 
         if _pipeline is not None and _pipeline.hf_device_map is None:
             for _, component in _pipeline.components.items():
-                if isinstance(component, nn.Module) and hasattr(component, "_hf_hook"):
+                if isinstance(component, nn.Module) and hasattr(
+                    component, "_hf_hook"
+                ):
                     if not is_model_cpu_offload:
-                        is_model_cpu_offload = isinstance(component._hf_hook, CpuOffload)
+                        is_model_cpu_offload = isinstance(
+                            component._hf_hook, CpuOffload
+                        )
                     if not is_sequential_cpu_offload:
                         is_sequential_cpu_offload = (
                             isinstance(component._hf_hook, AlignDevicesHook)
                             or hasattr(component._hf_hook, "hooks")
-                            and isinstance(component._hf_hook.hooks[0], AlignDevicesHook)
+                            and isinstance(
+                                component._hf_hook.hooks[0], AlignDevicesHook
+                            )
                         )
 
                     logger.info(
                         "Accelerate hooks detected. Since you have called `load_lora_weights()`, the previous hooks will be first removed. Then the LoRA parameters will be loaded and the hooks will be applied again."
                     )
-                    remove_hook_from_module(component, recurse=is_sequential_cpu_offload)
+                    remove_hook_from_module(
+                        component, recurse=is_sequential_cpu_offload
+                    )
 
         return (is_model_cpu_offload, is_sequential_cpu_offload)
 
@@ -255,7 +272,8 @@ class LoraBaseMixin:
         if not isinstance(pretrained_model_name_or_path_or_dict, dict):
             # Let's first try to load .safetensors weights
             if (use_safetensors and weight_name is None) or (
-                weight_name is not None and weight_name.endswith(".safetensors")
+                weight_name is not None
+                and weight_name.endswith(".safetensors")
             ):
                 try:
                     # Here we're relaxing the loading check to enable more Inference API
@@ -279,7 +297,9 @@ class LoraBaseMixin:
                         subfolder=subfolder,
                         user_agent=user_agent,
                     )
-                    state_dict = safetensors.torch.load_file(model_file, device="cpu")
+                    state_dict = safetensors.torch.load_file(
+                        model_file, device="cpu"
+                    )
                 except (IOError, safetensors.SafetensorError) as e:
                     if not allow_pickle:
                         raise e
@@ -290,7 +310,9 @@ class LoraBaseMixin:
             if model_file is None:
                 if weight_name is None:
                     weight_name = cls._best_guess_weight_name(
-                        pretrained_model_name_or_path_or_dict, file_extension=".bin", local_files_only=local_files_only
+                        pretrained_model_name_or_path_or_dict,
+                        file_extension=".bin",
+                        local_files_only=local_files_only,
                     )
                 model_file = _get_model_file(
                     pretrained_model_name_or_path_or_dict,
@@ -312,12 +334,17 @@ class LoraBaseMixin:
 
     @classmethod
     def _best_guess_weight_name(
-        cls, pretrained_model_name_or_path_or_dict, file_extension=".safetensors", local_files_only=False
+        cls,
+        pretrained_model_name_or_path_or_dict,
+        file_extension=".safetensors",
+        local_files_only=False,
     ):
         from .lora_pipeline import LORA_WEIGHT_NAME, LORA_WEIGHT_NAME_SAFE
 
         if local_files_only or HF_HUB_OFFLINE:
-            raise ValueError("When using the offline mode, you must specify a `weight_name`.")
+            raise ValueError(
+                "When using the offline mode, you must specify a `weight_name`."
+            )
 
         targeted_files = []
 
@@ -325,11 +352,19 @@ class LoraBaseMixin:
             return
         elif os.path.isdir(pretrained_model_name_or_path_or_dict):
             targeted_files = [
-                f for f in os.listdir(pretrained_model_name_or_path_or_dict) if f.endswith(file_extension)
+                f
+                for f in os.listdir(pretrained_model_name_or_path_or_dict)
+                if f.endswith(file_extension)
             ]
         else:
-            files_in_repo = model_info(pretrained_model_name_or_path_or_dict).siblings
-            targeted_files = [f.rfilename for f in files_in_repo if f.rfilename.endswith(file_extension)]
+            files_in_repo = model_info(
+                pretrained_model_name_or_path_or_dict
+            ).siblings
+            targeted_files = [
+                f.rfilename
+                for f in files_in_repo
+                if f.rfilename.endswith(file_extension)
+            ]
         if len(targeted_files) == 0:
             return
 
@@ -338,13 +373,24 @@ class LoraBaseMixin:
         # only top-level checkpoints are considered and not the other ones, hence "checkpoint".
         unallowed_substrings = {"scheduler", "optimizer", "checkpoint"}
         targeted_files = list(
-            filter(lambda x: all(substring not in x for substring in unallowed_substrings), targeted_files)
+            filter(
+                lambda x: all(
+                    substring not in x for substring in unallowed_substrings
+                ),
+                targeted_files,
+            )
         )
 
         if any(f.endswith(LORA_WEIGHT_NAME) for f in targeted_files):
-            targeted_files = list(filter(lambda x: x.endswith(LORA_WEIGHT_NAME), targeted_files))
+            targeted_files = list(
+                filter(lambda x: x.endswith(LORA_WEIGHT_NAME), targeted_files)
+            )
         elif any(f.endswith(LORA_WEIGHT_NAME_SAFE) for f in targeted_files):
-            targeted_files = list(filter(lambda x: x.endswith(LORA_WEIGHT_NAME_SAFE), targeted_files))
+            targeted_files = list(
+                filter(
+                    lambda x: x.endswith(LORA_WEIGHT_NAME_SAFE), targeted_files
+                )
+            )
 
         if len(targeted_files) > 1:
             raise ValueError(
@@ -410,7 +456,7 @@ class LoraBaseMixin:
 
         pipeline = DiffusionPipeline.from_pretrained(
             "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
-        ).to("cuda")
+        ).to("mps")
         pipeline.load_lora_weights("nerijs/pixel-art-xl", weight_name="pixel-art-xl.safetensors", adapter_name="pixel")
         pipeline.fuse_lora(lora_scale=0.7)
         ```
@@ -442,17 +488,26 @@ class LoraBaseMixin:
 
         for fuse_component in components:
             if fuse_component not in self._lora_loadable_modules:
-                raise ValueError(f"{fuse_component} is not found in {self._lora_loadable_modules=}.")
+                raise ValueError(
+                    f"{fuse_component} is not found in {self._lora_loadable_modules=}."
+                )
 
             model = getattr(self, fuse_component, None)
             if model is not None:
                 # check if diffusers model
                 if issubclass(model.__class__, ModelMixin):
-                    model.fuse_lora(lora_scale, safe_fusing=safe_fusing, adapter_names=adapter_names)
+                    model.fuse_lora(
+                        lora_scale,
+                        safe_fusing=safe_fusing,
+                        adapter_names=adapter_names,
+                    )
                 # handle transformers models.
                 if issubclass(model.__class__, PreTrainedModel):
                     fuse_text_encoder_lora(
-                        model, lora_scale=lora_scale, safe_fusing=safe_fusing, adapter_names=adapter_names
+                        model,
+                        lora_scale=lora_scale,
+                        safe_fusing=safe_fusing,
+                        adapter_names=adapter_names,
                     )
 
         self.num_fused_loras += 1
@@ -502,7 +557,9 @@ class LoraBaseMixin:
 
         for fuse_component in components:
             if fuse_component not in self._lora_loadable_modules:
-                raise ValueError(f"{fuse_component} is not found in {self._lora_loadable_modules=}.")
+                raise ValueError(
+                    f"{fuse_component} is not found in {self._lora_loadable_modules=}."
+                )
 
             model = getattr(self, fuse_component, None)
             if model is not None:
@@ -516,9 +573,15 @@ class LoraBaseMixin:
     def set_adapters(
         self,
         adapter_names: Union[List[str], str],
-        adapter_weights: Optional[Union[float, Dict, List[float], List[Dict]]] = None,
+        adapter_weights: Optional[
+            Union[float, Dict, List[float], List[Dict]]
+        ] = None,
     ):
-        adapter_names = [adapter_names] if isinstance(adapter_names, str) else adapter_names
+        adapter_names = (
+            [adapter_names]
+            if isinstance(adapter_names, str)
+            else adapter_names
+        )
 
         adapter_weights = copy.deepcopy(adapter_weights)
 
@@ -531,12 +594,20 @@ class LoraBaseMixin:
                 f"Length of adapter names {len(adapter_names)} is not equal to the length of the weights {len(adapter_weights)}"
             )
 
-        list_adapters = self.get_list_adapters()  # eg {"unet": ["adapter1", "adapter2"], "text_encoder": ["adapter2"]}
+        list_adapters = (
+            self.get_list_adapters()
+        )  # eg {"unet": ["adapter1", "adapter2"], "text_encoder": ["adapter2"]}
         all_adapters = {
-            adapter for adapters in list_adapters.values() for adapter in adapters
+            adapter
+            for adapters in list_adapters.values()
+            for adapter in adapters
         }  # eg ["adapter1", "adapter2"]
         invert_list_adapters = {
-            adapter: [part for part, adapters in list_adapters.items() if adapter in adapters]
+            adapter: [
+                part
+                for part, adapters in list_adapters.items()
+                if adapter in adapters
+            ]
             for adapter in all_adapters
         }  # eg {"adapter1": ["unet"], "adapter2": ["unet", "text_encoder"]}
 
@@ -549,12 +620,17 @@ class LoraBaseMixin:
                 if isinstance(weights, dict):
                     component_adapter_weights = weights.pop(component, None)
 
-                    if component_adapter_weights is not None and not hasattr(self, component):
+                    if component_adapter_weights is not None and not hasattr(
+                        self, component
+                    ):
                         logger.warning(
                             f"Lora weight dict contains {component} weights but will be ignored because pipeline does not have {component}."
                         )
 
-                    if component_adapter_weights is not None and component not in invert_list_adapters[adapter_name]:
+                    if (
+                        component_adapter_weights is not None
+                        and component not in invert_list_adapters[adapter_name]
+                    ):
                         logger.warning(
                             (
                                 f"Lora weight dict for adapter '{adapter_name}' contains {component},"
@@ -567,12 +643,18 @@ class LoraBaseMixin:
                     component_adapter_weights = weights
 
                 _component_adapter_weights.setdefault(component, [])
-                _component_adapter_weights[component].append(component_adapter_weights)
+                _component_adapter_weights[component].append(
+                    component_adapter_weights
+                )
 
             if issubclass(model.__class__, ModelMixin):
-                model.set_adapters(adapter_names, _component_adapter_weights[component])
+                model.set_adapters(
+                    adapter_names, _component_adapter_weights[component]
+                )
             elif issubclass(model.__class__, PreTrainedModel):
-                set_adapters_for_text_encoder(adapter_names, model, _component_adapter_weights[component])
+                set_adapters_for_text_encoder(
+                    adapter_names, model, _component_adapter_weights[component]
+                )
 
     def disable_lora(self):
         if not USE_PEFT_BACKEND:
@@ -631,7 +713,7 @@ class LoraBaseMixin:
 
         pipeline = DiffusionPipeline.from_pretrained(
             "stabilityai/stable-diffusion-xl-base-1.0",
-        ).to("cuda")
+        ).to("mps")
         pipeline.load_lora_weights("CiroN2022/toy-face", weight_name="toy_face_sdxl.safetensors", adapter_name="toy")
         pipeline.get_active_adapters()
         ```
@@ -675,7 +757,9 @@ class LoraBaseMixin:
 
         return set_adapters
 
-    def set_lora_device(self, adapter_names: List[str], device: Union[torch.device, str, int]) -> None:
+    def set_lora_device(
+        self, adapter_names: List[str], device: Union[torch.device, str, int]
+    ) -> None:
         """
         Moves the LoRAs listed in `adapter_names` to a target device. Useful for offloading the LoRA to the CPU in case
         you want to load multiple adapters and free some GPU memory.
@@ -698,15 +782,27 @@ class LoraBaseMixin:
                             module.lora_A[adapter_name].to(device)
                             module.lora_B[adapter_name].to(device)
                             # this is a param, not a module, so device placement is not in-place -> re-assign
-                            if hasattr(module, "lora_magnitude_vector") and module.lora_magnitude_vector is not None:
-                                module.lora_magnitude_vector[adapter_name] = module.lora_magnitude_vector[
-                                    adapter_name
-                                ].to(device)
+                            if (
+                                hasattr(module, "lora_magnitude_vector")
+                                and module.lora_magnitude_vector is not None
+                            ):
+                                module.lora_magnitude_vector[adapter_name] = (
+                                    module.lora_magnitude_vector[
+                                        adapter_name
+                                    ].to(device)
+                                )
 
     @staticmethod
     def pack_weights(layers, prefix):
-        layers_weights = layers.state_dict() if isinstance(layers, torch.nn.Module) else layers
-        layers_state_dict = {f"{prefix}.{module_name}": param for module_name, param in layers_weights.items()}
+        layers_weights = (
+            layers.state_dict()
+            if isinstance(layers, torch.nn.Module)
+            else layers
+        )
+        layers_state_dict = {
+            f"{prefix}.{module_name}": param
+            for module_name, param in layers_weights.items()
+        }
         return layers_state_dict
 
     @staticmethod
@@ -721,14 +817,18 @@ class LoraBaseMixin:
         from .lora_pipeline import LORA_WEIGHT_NAME, LORA_WEIGHT_NAME_SAFE
 
         if os.path.isfile(save_directory):
-            logger.error(f"Provided path ({save_directory}) should be a directory, not a file")
+            logger.error(
+                f"Provided path ({save_directory}) should be a directory, not a file"
+            )
             return
 
         if save_function is None:
             if safe_serialization:
 
                 def save_function(weights, filename):
-                    return safetensors.torch.save_file(weights, filename, metadata={"format": "pt"})
+                    return safetensors.torch.save_file(
+                        weights, filename, metadata={"format": "pt"}
+                    )
 
             else:
                 save_function = torch.save

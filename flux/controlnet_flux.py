@@ -15,28 +15,30 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import numpy as np
 import torch
 import torch.nn as nn
-
 from diffusers.configuration_utils import ConfigMixin, register_to_config
-from .lora.peft import PeftAdapterMixin
 from diffusers.models.attention_processor import AttentionProcessor
-from diffusers.models.modeling_utils import ModelMixin
-from diffusers.utils import USE_PEFT_BACKEND, is_torch_version, logging, scale_lora_layers, unscale_lora_layers
-#from .controlnet import BaseOutput, zero_module
-from diffusers.utils import BaseOutput
-from .embeddings import CombinedTimestepGuidanceTextProjEmbeddings, CombinedTimestepTextProjEmbeddings
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
-from .transformer_flux import FluxSingleTransformerBlock, FluxTransformerBlock
-import numpy as np
+from diffusers.models.modeling_utils import ModelMixin
+# from .controlnet import BaseOutput, zero_module
+from diffusers.utils import (USE_PEFT_BACKEND, BaseOutput, is_torch_version,
+                             logging, scale_lora_layers, unscale_lora_layers)
 
+from .embeddings import (CombinedTimestepGuidanceTextProjEmbeddings,
+                         CombinedTimestepTextProjEmbeddings)
+from .lora.peft import PeftAdapterMixin
+from .transformer_flux import FluxSingleTransformerBlock, FluxTransformerBlock
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
 
 def zero_module(module):
     for p in module.parameters():
         nn.init.zeros_(p)
     return module
+
 
 def get_1d_rotary_pos_embed(
     dim: int,
@@ -82,7 +84,14 @@ def get_1d_rotary_pos_embed(
         pos = torch.from_numpy(pos)  # type: ignore  # [S]
 
     theta = theta * ntk_factor
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=freqs_dtype)[: (dim // 2)] / dim)) / linear_factor  # [D/2]
+    freqs = (
+        1.0
+        / (
+            theta
+            ** (torch.arange(0, dim, 2, dtype=freqs_dtype)[: (dim // 2)] / dim)
+        )
+        / linear_factor
+    )  # [D/2]
     freqs = freqs.to(pos.device)
     freqs = torch.outer(pos, freqs)  # type: ignore   # [S, D/2]
     if use_real and repeat_interleave_real:
@@ -92,13 +101,20 @@ def get_1d_rotary_pos_embed(
         return freqs_cos, freqs_sin
     elif use_real:
         # stable audio
-        freqs_cos = torch.cat([freqs.cos(), freqs.cos()], dim=-1).float()  # [S, D]
-        freqs_sin = torch.cat([freqs.sin(), freqs.sin()], dim=-1).float()  # [S, D]
+        freqs_cos = torch.cat(
+            [freqs.cos(), freqs.cos()], dim=-1
+        ).float()  # [S, D]
+        freqs_sin = torch.cat(
+            [freqs.sin(), freqs.sin()], dim=-1
+        ).float()  # [S, D]
         return freqs_cos, freqs_sin
     else:
         # lumina
-        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64     # [S, D/2]
+        freqs_cis = torch.polar(
+            torch.ones_like(freqs), freqs
+        )  # complex64     # [S, D/2]
         return freqs_cis
+
 
 class FluxPosEmbed(nn.Module):
     # modified from https://github.com/black-forest-labs/flux/blob/c00d7c60b085fce8058b9df845e036090873f2ce/src/flux/modules/layers.py#L11
@@ -116,7 +132,11 @@ class FluxPosEmbed(nn.Module):
         freqs_dtype = torch.float32 if is_mps else torch.float64
         for i in range(n_axes):
             cos, sin = get_1d_rotary_pos_embed(
-                self.axes_dim[i], pos[:, i], repeat_interleave_real=True, use_real=True, freqs_dtype=freqs_dtype
+                self.axes_dim[i],
+                pos[:, i],
+                repeat_interleave_real=True,
+                use_real=True,
+                freqs_dtype=freqs_dtype,
             )
             cos_out.append(cos)
             sin_out.append(sin)
@@ -155,10 +175,13 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
         self.pos_embed = FluxPosEmbed(theta=10000, axes_dim=axes_dims_rope)
         text_time_guidance_cls = (
-            CombinedTimestepGuidanceTextProjEmbeddings if guidance_embeds else CombinedTimestepTextProjEmbeddings
+            CombinedTimestepGuidanceTextProjEmbeddings
+            if guidance_embeds
+            else CombinedTimestepTextProjEmbeddings
         )
         self.time_text_embed = text_time_guidance_cls(
-            embedding_dim=self.inner_dim, pooled_projection_dim=pooled_projection_dim
+            embedding_dim=self.inner_dim,
+            pooled_projection_dim=pooled_projection_dim,
         )
 
         self.context_embedder = nn.Linear(joint_attention_dim, self.inner_dim)
@@ -189,17 +212,25 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         # controlnet_blocks
         self.controlnet_blocks = nn.ModuleList([])
         for _ in range(len(self.transformer_blocks)):
-            self.controlnet_blocks.append(zero_module(nn.Linear(self.inner_dim, self.inner_dim)))
+            self.controlnet_blocks.append(
+                zero_module(nn.Linear(self.inner_dim, self.inner_dim))
+            )
 
         self.controlnet_single_blocks = nn.ModuleList([])
         for _ in range(len(self.single_transformer_blocks)):
-            self.controlnet_single_blocks.append(zero_module(nn.Linear(self.inner_dim, self.inner_dim)))
+            self.controlnet_single_blocks.append(
+                zero_module(nn.Linear(self.inner_dim, self.inner_dim))
+            )
 
         self.union = num_mode is not None
         if self.union:
-            self.controlnet_mode_embedder = nn.Embedding(num_mode, self.inner_dim)
+            self.controlnet_mode_embedder = nn.Embedding(
+                num_mode, self.inner_dim
+            )
 
-        self.controlnet_x_embedder = zero_module(torch.nn.Linear(in_channels, self.inner_dim))
+        self.controlnet_x_embedder = zero_module(
+            torch.nn.Linear(in_channels, self.inner_dim)
+        )
 
         self.gradient_checkpointing = False
 
@@ -214,12 +245,18 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         # set recursively
         processors = {}
 
-        def fn_recursive_add_processors(name: str, module: torch.nn.Module, processors: Dict[str, AttentionProcessor]):
+        def fn_recursive_add_processors(
+            name: str,
+            module: torch.nn.Module,
+            processors: Dict[str, AttentionProcessor],
+        ):
             if hasattr(module, "get_processor"):
                 processors[f"{name}.processor"] = module.get_processor()
 
             for sub_name, child in module.named_children():
-                fn_recursive_add_processors(f"{name}.{sub_name}", child, processors)
+                fn_recursive_add_processors(
+                    f"{name}.{sub_name}", child, processors
+                )
 
             return processors
 
@@ -250,7 +287,9 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
                 f" number of attention layers: {count}. Please make sure to pass {count} processor classes."
             )
 
-        def fn_recursive_attn_processor(name: str, module: torch.nn.Module, processor):
+        def fn_recursive_attn_processor(
+            name: str, module: torch.nn.Module, processor
+        ):
             if hasattr(module, "set_processor"):
                 if not isinstance(processor, dict):
                     module.set_processor(processor)
@@ -258,7 +297,9 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
                     module.set_processor(processor.pop(f"{name}.processor"))
 
             for sub_name, child in module.named_children():
-                fn_recursive_attn_processor(f"{name}.{sub_name}", child, processor)
+                fn_recursive_attn_processor(
+                    f"{name}.{sub_name}", child, processor
+                )
 
         for name, module in self.named_children():
             fn_recursive_attn_processor(name, module, processor)
@@ -286,16 +327,29 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         controlnet = cls(**config)
 
         if load_weights_from_transformer:
-            controlnet.pos_embed.load_state_dict(transformer.pos_embed.state_dict())
-            controlnet.time_text_embed.load_state_dict(transformer.time_text_embed.state_dict())
-            controlnet.context_embedder.load_state_dict(transformer.context_embedder.state_dict())
-            controlnet.x_embedder.load_state_dict(transformer.x_embedder.state_dict())
-            controlnet.transformer_blocks.load_state_dict(transformer.transformer_blocks.state_dict(), strict=False)
+            controlnet.pos_embed.load_state_dict(
+                transformer.pos_embed.state_dict()
+            )
+            controlnet.time_text_embed.load_state_dict(
+                transformer.time_text_embed.state_dict()
+            )
+            controlnet.context_embedder.load_state_dict(
+                transformer.context_embedder.state_dict()
+            )
+            controlnet.x_embedder.load_state_dict(
+                transformer.x_embedder.state_dict()
+            )
+            controlnet.transformer_blocks.load_state_dict(
+                transformer.transformer_blocks.state_dict(), strict=False
+            )
             controlnet.single_transformer_blocks.load_state_dict(
-                transformer.single_transformer_blocks.state_dict(), strict=False
+                transformer.single_transformer_blocks.state_dict(),
+                strict=False,
             )
 
-            controlnet.controlnet_x_embedder = zero_module(controlnet.controlnet_x_embedder)
+            controlnet.controlnet_x_embedder = zero_module(
+                controlnet.controlnet_x_embedder
+            )
 
         return controlnet
 
@@ -357,14 +411,19 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
             # weight the lora layers by setting `lora_scale` for each PEFT layer
             scale_lora_layers(self, lora_scale)
         else:
-            if joint_attention_kwargs is not None and joint_attention_kwargs.get("scale", None) is not None:
+            if (
+                joint_attention_kwargs is not None
+                and joint_attention_kwargs.get("scale", None) is not None
+            ):
                 logger.warning(
                     "Passing `scale` via `joint_attention_kwargs` when not using the PEFT backend is ineffective."
                 )
         hidden_states = self.x_embedder(hidden_states)
 
         # add
-        hidden_states = hidden_states + self.controlnet_x_embedder(controlnet_cond)
+        hidden_states = hidden_states + self.controlnet_x_embedder(
+            controlnet_cond
+        )
 
         timestep = timestep.to(hidden_states.dtype) * 1000
         if guidance is not None:
@@ -378,7 +437,9 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         )
         encoder_hidden_states = self.context_embedder(encoder_hidden_states)
         if t5_encoder_hidden_states is not None:
-            encoder_hidden_states = torch.cat([encoder_hidden_states, t5_encoder_hidden_states], dim=1)
+            encoder_hidden_states = torch.cat(
+                [encoder_hidden_states, t5_encoder_hidden_states], dim=1
+            )
 
         if txt_ids.ndim == 3:
             logger.warning(
@@ -390,10 +451,16 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         if self.union:
             # union mode
             if controlnet_mode is None:
-                raise ValueError("`controlnet_mode` cannot be `None` when applying ControlNet-Union")
+                raise ValueError(
+                    "`controlnet_mode` cannot be `None` when applying ControlNet-Union"
+                )
             # union mode emb
-            controlnet_mode_emb = self.controlnet_mode_embedder(controlnet_mode)
-            encoder_hidden_states = torch.cat([controlnet_mode_emb, encoder_hidden_states], dim=1)
+            controlnet_mode_emb = self.controlnet_mode_embedder(
+                controlnet_mode
+            )
+            encoder_hidden_states = torch.cat(
+                [controlnet_mode_emb, encoder_hidden_states], dim=1
+            )
             txt_ids = torch.cat([txt_ids[:1], txt_ids], dim=0)
 
         if img_ids.ndim == 3:
@@ -419,14 +486,20 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
                     return custom_forward
 
-                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    hidden_states,
-                    encoder_hidden_states,
-                    temb,
-                    image_rotary_emb,
-                    **ckpt_kwargs,
+                ckpt_kwargs: Dict[str, Any] = (
+                    {"use_reentrant": False}
+                    if is_torch_version(">=", "1.11.0")
+                    else {}
+                )
+                encoder_hidden_states, hidden_states = (
+                    torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(block),
+                        hidden_states,
+                        encoder_hidden_states,
+                        temb,
+                        image_rotary_emb,
+                        **ckpt_kwargs,
+                    )
                 )
 
             else:
@@ -438,7 +511,9 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
                 )
             block_samples = block_samples + (hidden_states,)
 
-        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
+        hidden_states = torch.cat(
+            [encoder_hidden_states, hidden_states], dim=1
+        )
 
         single_block_samples = ()
         for index_block, block in enumerate(self.single_transformer_blocks):
@@ -453,7 +528,11 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
                     return custom_forward
 
-                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                ckpt_kwargs: Dict[str, Any] = (
+                    {"use_reentrant": False}
+                    if is_torch_version(">=", "1.11.0")
+                    else {}
+                )
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
                     hidden_states,
@@ -468,26 +547,47 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
                     temb=temb,
                     image_rotary_emb=image_rotary_emb,
                 )
-            single_block_samples = single_block_samples + (hidden_states[:, encoder_hidden_states.shape[1] :],)
+            single_block_samples = single_block_samples + (
+                hidden_states[:, encoder_hidden_states.shape[1] :],
+            )
 
         # controlnet block
         controlnet_block_samples = ()
-        for block_sample, controlnet_block in zip(block_samples, self.controlnet_blocks):
+        for block_sample, controlnet_block in zip(
+            block_samples, self.controlnet_blocks
+        ):
             block_sample = controlnet_block(block_sample)
-            controlnet_block_samples = controlnet_block_samples + (block_sample,)
+            controlnet_block_samples = controlnet_block_samples + (
+                block_sample,
+            )
 
         controlnet_single_block_samples = ()
-        for single_block_sample, controlnet_block in zip(single_block_samples, self.controlnet_single_blocks):
+        for single_block_sample, controlnet_block in zip(
+            single_block_samples, self.controlnet_single_blocks
+        ):
             single_block_sample = controlnet_block(single_block_sample)
-            controlnet_single_block_samples = controlnet_single_block_samples + (single_block_sample,)
+            controlnet_single_block_samples = (
+                controlnet_single_block_samples + (single_block_sample,)
+            )
 
         # scaling
-        controlnet_block_samples = [sample * conditioning_scale for sample in controlnet_block_samples]
-        controlnet_single_block_samples = [sample * conditioning_scale for sample in controlnet_single_block_samples]
+        controlnet_block_samples = [
+            sample * conditioning_scale for sample in controlnet_block_samples
+        ]
+        controlnet_single_block_samples = [
+            sample * conditioning_scale
+            for sample in controlnet_single_block_samples
+        ]
 
-        controlnet_block_samples = None if len(controlnet_block_samples) == 0 else controlnet_block_samples
+        controlnet_block_samples = (
+            None
+            if len(controlnet_block_samples) == 0
+            else controlnet_block_samples
+        )
         controlnet_single_block_samples = (
-            None if len(controlnet_single_block_samples) == 0 else controlnet_single_block_samples
+            None
+            if len(controlnet_single_block_samples) == 0
+            else controlnet_single_block_samples
         )
 
         if USE_PEFT_BACKEND:
@@ -541,7 +641,9 @@ class FluxMultiControlNetModel(ModelMixin):
         if len(self.nets) == 1 and self.nets[0].union:
             controlnet = self.nets[0]
 
-            for i, (image, mode, scale) in enumerate(zip(controlnet_cond, controlnet_mode, conditioning_scale)):
+            for i, (image, mode, scale) in enumerate(
+                zip(controlnet_cond, controlnet_mode, conditioning_scale)
+            ):
                 block_samples, single_block_samples = controlnet(
                     hidden_states=hidden_states,
                     controlnet_cond=image,
@@ -565,7 +667,9 @@ class FluxMultiControlNetModel(ModelMixin):
                 else:
                     control_block_samples = [
                         control_block_sample + block_sample
-                        for control_block_sample, block_sample in zip(control_block_samples, block_samples)
+                        for control_block_sample, block_sample in zip(
+                            control_block_samples, block_samples
+                        )
                     ]
 
                     control_single_block_samples = [
@@ -579,7 +683,12 @@ class FluxMultiControlNetModel(ModelMixin):
         # load all ControlNets into memories
         else:
             for i, (image, mode, scale, controlnet) in enumerate(
-                zip(controlnet_cond, controlnet_mode, conditioning_scale, self.nets)
+                zip(
+                    controlnet_cond,
+                    controlnet_mode,
+                    conditioning_scale,
+                    self.nets,
+                )
             ):
                 block_samples, single_block_samples = controlnet(
                     hidden_states=hidden_states,
@@ -601,16 +710,25 @@ class FluxMultiControlNetModel(ModelMixin):
                     control_block_samples = block_samples
                     control_single_block_samples = single_block_samples
                 else:
-                    if block_samples is not None and control_block_samples is not None:
+                    if (
+                        block_samples is not None
+                        and control_block_samples is not None
+                    ):
                         control_block_samples = [
                             control_block_sample + block_sample
-                            for control_block_sample, block_sample in zip(control_block_samples, block_samples)
+                            for control_block_sample, block_sample in zip(
+                                control_block_samples, block_samples
+                            )
                         ]
-                    if single_block_samples is not None and control_single_block_samples is not None:
+                    if (
+                        single_block_samples is not None
+                        and control_single_block_samples is not None
+                    ):
                         control_single_block_samples = [
                             control_single_block_sample + block_sample
                             for control_single_block_sample, block_sample in zip(
-                                control_single_block_samples, single_block_samples
+                                control_single_block_samples,
+                                single_block_samples,
                             )
                         ]
 

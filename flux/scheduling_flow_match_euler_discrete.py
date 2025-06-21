@@ -18,11 +18,9 @@ from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-
 from diffusers.configuration_utils import ConfigMixin, register_to_config
-from diffusers.utils import BaseOutput, logging
 from diffusers.schedulers.scheduling_utils import SchedulerMixin
-
+from diffusers.utils import BaseOutput, logging
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -72,7 +70,9 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
         base_image_seq_len: Optional[int] = 256,
         max_image_seq_len: Optional[int] = 4096,
     ):
-        timesteps = np.linspace(1, num_train_timesteps, num_train_timesteps, dtype=np.float32)[::-1].copy()
+        timesteps = np.linspace(
+            1, num_train_timesteps, num_train_timesteps, dtype=np.float32
+        )[::-1].copy()
         timesteps = torch.from_numpy(timesteps).to(dtype=torch.float32)
 
         sigmas = timesteps / num_train_timesteps
@@ -85,7 +85,9 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
         self._step_index = None
         self._begin_index = None
 
-        self.sigmas = sigmas.to("cpu")  # to avoid too much CPU/GPU communication
+        self.sigmas = sigmas.to(
+            "cpu"
+        )  # to avoid too much CPU/GPU communication
         self.sigma_min = self.sigmas[-1].item()
         self.sigma_max = self.sigmas[0].item()
 
@@ -138,7 +140,9 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
 
         if sample.device.type == "mps" and torch.is_floating_point(timestep):
             # mps does not support float64
-            schedule_timesteps = self.timesteps.to(sample.device, dtype=torch.float32)
+            schedule_timesteps = self.timesteps.to(
+                sample.device, dtype=torch.float32
+            )
             timestep = timestep.to(sample.device, dtype=torch.float32)
         else:
             schedule_timesteps = self.timesteps.to(sample.device)
@@ -146,7 +150,10 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
 
         # self.begin_index is None when scheduler is used for training, or pipeline does not implement set_begin_index
         if self.begin_index is None:
-            step_indices = [self.index_for_timestep(t, schedule_timesteps) for t in timestep]
+            step_indices = [
+                self.index_for_timestep(t, schedule_timesteps)
+                for t in timestep
+            ]
         elif self.step_index is not None:
             # add_noise is called after first denoising step (for inpainting)
             step_indices = [self.step_index] * timestep.shape[0]
@@ -186,12 +193,16 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
         """
 
         if self.config.use_dynamic_shifting and mu is None:
-            raise ValueError(" you have a pass a value for `mu` when `use_dynamic_shifting` is set to be `True`")
+            raise ValueError(
+                " you have a pass a value for `mu` when `use_dynamic_shifting` is set to be `True`"
+            )
 
         if sigmas is None:
             self.num_inference_steps = num_inference_steps
             timesteps = np.linspace(
-                self._sigma_to_t(self.sigma_max), self._sigma_to_t(self.sigma_min), num_inference_steps
+                self._sigma_to_t(self.sigma_max),
+                self._sigma_to_t(self.sigma_min),
+                num_inference_steps,
             )
 
             sigmas = timesteps / self.config.num_train_timesteps
@@ -199,9 +210,15 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
         if self.config.use_dynamic_shifting:
             sigmas = self.time_shift(mu, 1.0, sigmas)
         else:
-            sigmas = self.config.shift * sigmas / (1 + (self.config.shift - 1) * sigmas)
+            sigmas = (
+                self.config.shift
+                * sigmas
+                / (1 + (self.config.shift - 1) * sigmas)
+            )
 
-        sigmas = torch.from_numpy(sigmas).to(dtype=torch.float32, device=device)
+        sigmas = torch.from_numpy(sigmas).to(
+            dtype=torch.float32, device=device
+        )
         timesteps = sigmas * self.config.num_train_timesteps
 
         self.timesteps = timesteps.to(device=device)
@@ -309,8 +326,13 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
 
     def __len__(self):
         return self.config.num_train_timesteps
-    
-    def step_to_x0(self, model_output: torch.FloatTensor, timestep: Union[float, torch.FloatTensor], sample: torch.FloatTensor) -> torch.FloatTensor:
+
+    def step_to_x0(
+        self,
+        model_output: torch.FloatTensor,
+        timestep: Union[float, torch.FloatTensor],
+        sample: torch.FloatTensor,
+    ) -> torch.FloatTensor:
         """
         Compute the predicted x_0 given the model output and current sample at timestep t.
         """

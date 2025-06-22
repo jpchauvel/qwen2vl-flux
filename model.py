@@ -5,6 +5,7 @@ import tomllib
 import cv2
 import numpy as np
 import torch
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler
 from PIL import Image
 from torch import nn
@@ -48,14 +49,12 @@ def get_lora_toml_file(lora_conf_name):
     return os.path.join(base_dir, lora_conf_name)
 
 
-def get_loras():
+def add_loras_to_pipeline(pipeline: DiffusionPipeline):
     with open(get_lora_toml_file(LORA_CONF_FILE), "rb") as f:
         data = tomllib.load(f)
 
-    return {
-        lora_conf["name"]: get_lora_path(lora_conf["path"])
-        for lora_conf in data.get("project", {}).get("loras", [])
-    }
+    for lora_conf in data.get("project", {}).get("loras", []):
+        pipeline.load_lora_weights(get_lora_path(lora_conf["path"]), adapter_name=lora_conf["name"])
 
 
 # Model paths configuration
@@ -622,8 +621,7 @@ class FluxModel:
                 tokenizer=self.tokenizer,
             )
 
-            for adapter_name, path in get_loras().items():
-                pipeline.load_lora_weights(path, adapter_name=adapter_name)
+            add_loras_to_pipeline(pipeline)
 
             gen_images = pipeline(
                 prompt_embeds=qwen2_hidden_state_a.repeat(batch_size, 1, 1),
@@ -654,10 +652,7 @@ class FluxModel:
                 tokenizer=self.tokenizer,
             )
 
-            for adapter_name, path in get_loras().items():
-                img2img_pipeline.load_lora_weights(
-                    path, adapter_name=adapter_name
-                )
+            add_loras_to_pipeline(img2img_pipeline)
 
             gen_images = img2img_pipeline(
                 image=input_image_a,
@@ -698,10 +693,7 @@ class FluxModel:
                 tokenizer=self.tokenizer,
             )
 
-            for adapter_name, path in get_loras().items():
-                inpaint_pipeline.load_lora_weights(
-                    path, adapter_name=adapter_name
-                )
+            add_loras_to_pipeline(inpaint_pipeline)
 
             gen_images = inpaint_pipeline(
                 image=input_image_a,
@@ -740,10 +732,7 @@ class FluxModel:
                 controlnet=self.controlnet,
             )
 
-            for adapter_name, path in get_loras().items():
-                controlnet_pipeline.load_lora_weights(
-                    path, adapter_name=adapter_name
-                )
+            add_loras_to_pipeline(controlnet_pipeline)
 
             # 准备控制图像和模式列表
             control_images = []
@@ -826,10 +815,7 @@ class FluxModel:
                 controlnet=self.controlnet,
             )
 
-            for adapter_name, path in get_loras().items():
-                controlnet_pipeline.load_lora_weights(
-                    path, adapter_name=adapter_name
-                )
+            add_loras_to_pipeline(controlnet_pipeline)
 
             # 准备控制图像和模式列表
             control_images = []

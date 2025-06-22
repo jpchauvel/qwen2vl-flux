@@ -5,8 +5,8 @@ import tomllib
 import cv2
 import numpy as np
 import torch
-from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from PIL import Image
 from torch import nn
 from transformers import (AutoProcessor, CLIPTextModel, CLIPTokenizer,
@@ -53,8 +53,34 @@ def add_loras_to_pipeline(pipeline: DiffusionPipeline):
     with open(get_lora_toml_file(LORA_CONF_FILE), "rb") as f:
         data = tomllib.load(f)
 
+    pipeline.enable_lora()
+    pipeline.unfuse_lora()
     for lora_conf in data.get("project", {}).get("loras", []):
-        pipeline.load_lora_weights(get_lora_path(lora_conf["path"]), adapter_name=lora_conf["name"])
+        pipeline.load_lora_weights(
+            get_lora_path(lora_conf["path"]), adapter_name=lora_conf["name"]
+        )
+
+    pipeline.set_adapters(
+        *list(
+            zip(
+                *[
+                    (lora_conf["name"], lora_conf["strength"])
+                    for lora_conf in data.get("project", {}).get("loras", [])
+                ]
+            )
+        )
+    )
+    pipeline.fuse_lora()
+
+    clip_skip = data.get("clip_skip", 0)
+    if clip_skip > 0:
+        # Apply clip clip skip
+        clip_layers = pipeline.text_encoder.text_model.encoder.layers
+        pipeline.text_encoder.text_model.encoder.layers = clip_layers[
+            :-clip_skip
+        ]
+
+    return pipeline
 
 
 # Model paths configuration
